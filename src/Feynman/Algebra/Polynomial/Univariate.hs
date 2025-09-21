@@ -14,6 +14,8 @@ module Feynman.Algebra.Polynomial.Univariate(
   constant,
   (*|),
   primitiveRoot,
+  unity,
+  constCyc,
   evaluate
   )
 where
@@ -125,14 +127,26 @@ unifyOrder (Cyc n p) (Cyc m q)
 
 -- | Rewrite the cyclotomic in lowest order
 reduceOrder :: (Eq r, Num r) => Cyclotomic r -> Cyclotomic r
-reduceOrder (Cyc m c) = Cyc m' c'
+reduceOrder (Cyc m c) = Cyc m' c''
   where m' = m `div` d
         c' = Univariate . Map.mapKeysMonotonic (`div` d) $ getCoeffs c
+        c'' = Univariate . Map.fromListWith (+) . map degRed . Map.toList $ getCoeffs c'
+        degRed (k,r) = case m' `mod` 2 of
+          0 -> (k `mod` (m' `div` 2), (-1)^(k `div` (m' `div` 2)) * r)
+          1 -> (k `mod` m', r)
         d  = foldr gcd m . Map.keys $ getCoeffs c
 
 -- | Construct the cyclotomic polynomial \(\zeta_i\)
 primitiveRoot :: Num r => Integer -> Cyclotomic r
 primitiveRoot i = Cyc i var
+
+-- | Construct the root of unity \(e^{2\pi i j/i}\)
+unity :: (Eq r, Num r) => Integer -> Integer -> Cyclotomic r
+unity i j = reduceOrder $ Cyc i (var^j)
+  
+-- | Construct the root of unity \(e^{2\pi i j/i}\)
+constCyc :: (Eq r, Num r) => r -> Cyclotomic r
+constCyc a = Cyc 1 $ constant a
 
 -- | Convert to a complex number
 evaluate :: (Real r, RealFloat f) => Cyclotomic r -> Complex f
