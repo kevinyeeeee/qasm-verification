@@ -1359,12 +1359,6 @@ isOrthonormal sop
   | inDeg sop /= 0 = error "isOrthonormal: input is not a state"
   | otherwise      = (grind $ p * p) == p where p = sumAll $ (dagger sop) .> sop
 
--- | Checks whether a state containing free variables forms an orthonormal basis
-isUnitary :: (Eq g, Periodic g, Dyadic g) => Pathsum g -> Bool
-isUnitary sop
-  | inDeg sop /= outDeg sop = False
-  | otherwise               = isIdentity (dagger sop .> sop) && isIdentity (sop .> dagger sop)
-
 {--------------------------
  Simulation
  --------------------------}
