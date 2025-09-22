@@ -675,6 +675,19 @@ bind = flip (foldl' go)
 close :: (Eq g, Abelian g) => Pathsum g -> Pathsum g
 close sop = bind (freeVars sop) sop
 
+-- | Sum over some collection of free variables in a path sum
+sumover :: (Foldable f, Eq g, Abelian g) => f String -> Pathsum g -> Pathsum g
+sumover = flip (foldl' go)
+  where go sop x =
+          let v = PVar $ pathVars sop in
+            sop { pathVars = (pathVars sop) + 1,
+                  phasePoly = subst (FVar x) (ofVar v) (phasePoly sop),
+                  outVals = map (subst (FVar x) (ofVar v)) (outVals sop) }
+
+-- | Close a path sum by suming ovewr all free variables
+sumAll :: (Eq g, Abelian g) => Pathsum g -> Pathsum g
+sumAll sop = sumover (freeVars sop) sop
+
 -- | Unbind (instantiate) some collection of inputs
 unbind :: (Foldable f, Eq g, Abelian g) => f Int -> Pathsum g -> Pathsum g
 unbind xs (Pathsum a b c d e f) = Pathsum a (b - length xs) c d e' f' where
@@ -1340,6 +1353,18 @@ isPure sop
   | otherwise               = purity == identity 0 where
       purity = grind $ trace $ sop .> sop
 
+-- | Checks whether a state containing free variables forms an orthonormal basis
+isOrthonormal :: (Eq g, Periodic g, Dyadic g) => Pathsum g -> Bool
+isOrthonormal sop
+  | inDeg sop /= 0 = error "isOrthonormal: input is not a state"
+  | otherwise      = (grind $ p * p) == p where p = sumAll $ (dagger sop) .> sop
+
+-- | Checks whether a state containing free variables forms an orthonormal basis
+isUnitary :: (Eq g, Periodic g, Dyadic g) => Pathsum g -> Bool
+isUnitary sop
+  | inDeg sop /= outDeg sop = False
+  | otherwise               = isIdentity (dagger sop .> sop) && isIdentity (sop .> dagger sop)
+
 {--------------------------
  Simulation
  --------------------------}
@@ -1401,33 +1426,6 @@ setCover u sets = go [] u sets where
         maxV  = snd $ maximum freqs
     in
       go (maxV:cover) u (filter (not . (maxV `elem`)) sets)
-
--- | Gives a bound for the complexity using set-cover decomposition
-setcoverBound :: [FF2] -> Pathsum DMod2 -> [FF2] -> Int
-setcoverBound o sop i = length $ setCover u sets where
-  sop' = simplify $ ket (map constant i) .> sop .> bra (map constant o)
-  
-  order (a,x)   = denomExp (unpack a) + degree x
-
-  poly = phasePoly sop'
-
-  u = Set.toList $ vars poly
-
-  sets =
-    let f (a,x) = order (a,x) >= 3 in
-      map (\(a,x) -> Set.toList $ vars x) . filter f . toTermList $ poly
-
--- | Gives a bound for the complexity using stabilizer decompositions
-stabsimBound :: [FF2] -> Pathsum DMod2 -> [FF2] -> Int
-stabsimBound o sop i = length tStates where
-  sop' = simplify $ ket (map constant i) .> sop .> bra (map constant o)
-  
-  poly = fourier $ phasePoly sop'
-
-  tStates =
-    let f (a,x) = denomExp (unpack a) >= 2 in
-      filter f $ toTermList poly
-  
 
 -- | Performs a strong simulation using set cover based methods
 ssimulate :: [FF2] -> Pathsum DMod2 -> [FF2] -> Cyclotomic DyadicRational
