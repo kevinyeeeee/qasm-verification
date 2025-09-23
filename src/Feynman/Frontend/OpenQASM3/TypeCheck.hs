@@ -1,182 +1,61 @@
 {-|
-Module      : Core
-Description : Core openQASM 3 syntax
+Module      : TypeCheck
+Description : Type checker
 Copyright   : (c) Matthew Amy, 2025
 Maintainer  : matt.e.amy@gmail.com
 Stability   : experimental
 Portability : portable
 -}
 
-module Feynman.Frontend.OpenQASM3.Core where
+module Feynman.Frontend.OpenQASM3.TypeCheck where
 
 import Control.Monad
-import Data.Complex
-import Data.Bits
+import Control.Monad.State
+
+import Data.Map (Map)
+import qualified Data.Map as Map
 
 import Feynman.Core (ID)
 import qualified Feynman.Frontend.OpenQASM3.Syntax as S
+import Feynman.Frontend.OpenQASM3.Core
 
-{- Translation levels -}
+{- Types -}
 
-type Lvl1 = S.SourceRef
-  
-{- Translation errors -}
-data ErrMsg = Err String deriving Show
+-- | Type elaborate with compile-time constant declarations
+data ElaboratedType = EType { ty :: Type (),
+                              const :: Bool
+                            } deriving (Show)
 
-{- Convenience types -}
-type Annotation = String
-type Version    = (Int, Maybe Int)
+-- | Type checking environment, consisting of bindings to
+--   elaborate types and a list of error messages
+data Env = Env { binds :: Map ID ElaboratedType,
+                 errs  :: [ErrMsg]
+               } deriving (Show)
 
-{- Core AST -}
+-- | The type checking monad
+type TC = State Env
 
--- | Unary operators
-data UOp = SinOp
-         | CosOp
-         | TanOp
-         | ArccosOp
-         | ArcsinOp
-         | ArctanOp
-         | CeilOp
-         | FloorOp
-         | ExpOp
-         | LnOp
-         | SqrtOp
-         | RealOp
-         | ImOp
-         | NegOp -- ~, !
-         | UMinusOp -- -
-         | PopcountOp -- popcount
-         deriving (Show)
+-- | The empty environment
+emptyEnv :: Env
+emptyEnv = Env Map.empty []
 
--- | Binary operators
-data BinOp = AndOp -- &, &&
-           | OrOp  -- |, ||
-           | XorOp -- ^
-           | LShiftOp  -- <<
-           | RShiftOp -- >>
-           | LRotOp  -- rotl
-           | RRotOp -- rotr
-           | EqOp -- ==
-           | LTOp -- <
-           | LEqOp -- <=
-           | GTOp -- >
-           | GEqOp -- >=
-           | PlusOp -- +
-           | MinusOp -- -
-           | TimesOp -- *
-           | DivOp -- / 
-           | ModOp -- %
-           | PowOp -- **
-           | ConcatOp -- ++, not used in openQASM 3 spec
-           deriving (Show)
+-- | Logs an error message
+log :: ErrMsg -> TC ()
+log msg = modify (\env -> env { errs = errs env ++ [msg] })
 
+{- Semantic analysis & type checking -}
 
--- | OpenQASM 3 types. Arrays are currently unsupported
-data Type a = TCBit          
-            | TCReg  (Expr a) 
-            | TQBit          
-            | TQReg  (Expr a)
-            -- Classical types
-            | TBool
-            | TUInt  (Maybe (Expr a))
-            | TInt   (Maybe (Expr a))
-            | TAngle (Maybe (Expr a))
-            | TFloat (Maybe (Expr a))
-            | TCmplx (Maybe (Expr a)) -- Corresponds to openQASM 3 type cmplx[float[expr]]
-            -- Non-syntactic types
-            | TUnit
-            | TProc { isGate :: Bool,
-                      argTypes :: [Type a],
-                      returnType :: Maybe (Type a)
-                    }
-            deriving (Show)
+-- | Top-level type checking
+tcProg :: S.ParseNode -> TC (Prog ElaboratedType)
+tcProg node = case node of
+  S.Node (S.Program i j _) xs _ -> mapM tcStmt xs >>= return . Prog (i,j)
+  _                             -> error "Fatal: malformed parse tree"
 
--- | Access paths. Either a variable or an index into a register/bit array
-data AccessPath a = AVar a ID
-                  | AIndex a ID (Expr a)
-                  deriving (Show)
+-- | Type checkingh statements
+tcStmt :: S.ParseNode -> TC (Stmt ElaboratedType)
+tcStmt _ = return $ SSkip (EType TUnit False)
 
--- | Gate modifiers
-data Modifier a = MCtrl a Bool (Maybe (Expr a))
-                | MInv a
-                | MPow a (Expr a)
-                deriving (Show)
-
--- | Expressions
-data Expr a = EVar a ID
-            | EIndex a (Expr a) (Expr a)
-            | ECall a [Modifier a] ID [(Expr a)]
-            | EMeasure a (Expr a)
-            | EInt a Int
-            | EFloat a Double
-            | ECmplx a (Complex Double)
-            | ESlice a (Expr a) (Maybe (Expr a)) (Expr a) -- Inclusive on both ends
-            | ESet a [(Expr a)]
-            | EPi a
-            | EIm a
-            | EBool a Bool
-            | EUOp a UOp (Expr a)
-            | EBOp a (Expr a) BinOp (Expr a)
-            | EStmt a (Stmt a)
-            deriving (Show)
-
--- | Declarations
-data Decl a =
-    DVar { vid :: ID, typ :: Type a, val :: Maybe (Expr a) }
-  | DDef { did :: ID, dparams :: [(ID, Type a)], dreturns :: Maybe (Type a), dbody :: Stmt a }
-  | DExtern { eid :: ID, eparams :: [(Type a)], ereturns :: Maybe (Type a) }
-  | DAlias { aid :: ID, aexps :: [(Expr a)] }
-  deriving (Show)
-
--- | Statements
-data Stmt a =
-    SInclude a String
-  | SSkip a
-  | SDeclare a (Decl a)
-  | SBarrier a [AccessPath a]
-  | SBlock a [Stmt a]
-  | SExpr a (Expr a)
-  | SAssign a (AccessPath a) (Maybe BinOp) (Expr a)
-  | SFor a (ID, Type a) (Expr a) (Stmt a)
-  | SIf a (Expr a) (Stmt a) (Stmt a)
-  | SReset a (Expr a)
-  | SReturn a (Expr a)
-  | SWhile a (Expr a) (Stmt a)
-  | SAnnotated a [Annotation] (Stmt a)
-  | SPragma a String
-  deriving (Show)
-
--- | Top level of an openQASM3 AST
-data Prog a = Prog Version [Stmt a] deriving (Show)
-
-{- Utilities -}
-
--- | Gets the identifier being declared
-declID :: Decl a -> ID
-declID decl = case decl of
-  (DVar id _ _) -> id
-  (DDef id _ _ _) -> id
-  (DExtern id _ _) -> id
-  (DAlias id _) -> id
-
--- | Applies a monadic computation to a list of nodes
-inLst :: (S.ParseNode -> Either ErrMsg b) -> S.ParseNode -> Either ErrMsg [b]
-inLst f S.NilNode            = return []
-inLst f (S.Node S.List xs c) = mapM f xs
-inLst f node                 = Left (Err $ "Malformed list: " ++ show node)
-
-{- Translation passes -}
-
--- | Translation from concrete syntax to the core subset
-qasmToCore :: S.ParseNode -> Either ErrMsg (Prog Lvl1)
-qasmToCore = translateProg
-
--- | Top-level translation
-translateProg :: S.ParseNode -> Either ErrMsg (Prog Lvl1)
-translateProg node = case node of
-  S.Node (S.Program i j _) xs _ -> mapM translateStmt xs >>= return . Prog (i,j)
-  _                             -> Left (Err $ "Malformed Program: " ++ show node)
-
+{-
 -- | Type translations
 translateType :: S.ParseNode -> Either ErrMsg (Type Lvl1)
 translateType node = case node of
@@ -558,3 +437,4 @@ translateCompoundAOp token = case token of
   S.DoubleGreaterEqualsToken  -> return $ Just RShiftOp
   S.PercentEqualsToken        -> return $ Just ModOp
   S.DoubleAsteriskEqualsToken -> return $ Just PowOp
+-}
