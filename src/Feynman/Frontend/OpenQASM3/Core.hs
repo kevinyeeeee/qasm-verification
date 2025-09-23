@@ -1,6 +1,6 @@
 {-|
 Module      : Core
-Description : Core openQASM 3 abstract syntax
+Description : Core openQASM 3 syntax
 Copyright   : (c) Matthew Amy, 2025
 Maintainer  : matt.e.amy@gmail.com
 Stability   : experimental
@@ -16,6 +16,11 @@ import Data.Bits
 import Feynman.Core (ID)
 import qualified Feynman.Frontend.OpenQASM3.Syntax as S
 
+{- Translation levels -}
+
+type Lvl1 = S.SourceRef
+type Lvl2 = Type ()
+
 {- Translation errors -}
 data ErrMsg = Err String
 
@@ -24,45 +29,8 @@ type Annotation = String
 type Version    = (Int, Maybe Int)
 
 {- Core AST -}
-data Type a = TCBit       -- Symbolic
-            | TCReg (Expr a)  -- Symbolic
-            | TQBit       -- Symbolic
-            | TQReg (Expr a)  -- Symbolic
-            | TUInt (Expr a)  -- Symbolic
-            | TAngle
-            | TBool
-            | TInt
-            | TFloat
-            | TCmplx
-            | TProc [Type a]
-            deriving (Show)
 
-data AccessPath a = AVar ID
-                  | AIndex ID (Expr a)
-                  deriving (Show)
-
-data Modifier a = MCtrl Bool (Maybe (Expr a))
-                | MInv
-                | MPow (Expr a)
-                deriving (Show)
-
-data Expr a = EVar ID
-            | EIndex (Expr a) (Expr a)
-            | ECall [Modifier a] ID [(Expr a)]
-            | EMeasure (Expr a)
-            | EInt Int
-            | EFloat Double
-            | ECmplx (Complex Double)
-            | ESlice (Expr a) (Maybe (Expr a)) (Expr a) -- Inclusive on both ends
-            | ESet [(Expr a)]
-            | EPi
-            | EIm
-            | EBool Bool
-            | EUOp UOp (Expr a)
-            | EBOp (Expr a) BinOp (Expr a)
-            | EStmt (Stmt a)
-            deriving (Show)
-
+-- | Unary operators
 data UOp = SinOp
          | CosOp
          | TanOp
@@ -81,6 +49,7 @@ data UOp = SinOp
          | PopcountOp -- popcount
          deriving (Show)
 
+-- | Binary operators
 data BinOp = AndOp -- &, &&
            | OrOp  -- |, ||
            | XorOp -- ^
@@ -102,6 +71,57 @@ data BinOp = AndOp -- &, &&
            | ConcatOp -- ++, not used in openQASM 3 spec
            deriving (Show)
 
+
+-- | OpenQASM 3 types. Arrays are currently unsupported
+data Type a = TCBit          
+            | TCReg  (Expr a) 
+            | TQBit          
+            | TQReg  (Expr a)
+            -- Classical types
+            | TBool
+            | TUInt  (Maybe (Expr a))
+            | TInt   (Maybe (Expr a))
+            | TAngle (Maybe (Expr a))
+            | TFloat (Maybe (Expr a))
+            | TCmplx (Maybe (Expr a)) -- Corresponds to openQASM 3 type cmplx[float[expr]]
+            -- Non-syntactic types
+            | TUnit
+            | TProc { isGate :: Bool,
+                      argTypes :: [Type a],
+                      returnType :: Maybe (Type a)
+                    }
+            deriving (Show)
+
+-- | Access paths. Either a variable or an index into a register/bit array
+data AccessPath a = AVar a ID
+                  | AIndex a ID (Expr a)
+                  deriving (Show)
+
+-- | Gate modifiers
+data Modifier a = MCtrl a Bool (Maybe (Expr a))
+                | MInv a
+                | MPow a (Expr a)
+                deriving (Show)
+
+-- | Expressions
+data Expr a = EVar a ID
+            | EIndex a (Expr a) (Expr a)
+            | ECall a [Modifier a] ID [(Expr a)]
+            | EMeasure a (Expr a)
+            | EInt a Int
+            | EFloat a Double
+            | ECmplx a (Complex Double)
+            | ESlice a (Expr a) (Maybe (Expr a)) (Expr a) -- Inclusive on both ends
+            | ESet a [(Expr a)]
+            | EPi a
+            | EIm a
+            | EBool a Bool
+            | EUOp a UOp (Expr a)
+            | EBOp a (Expr a) BinOp (Expr a)
+            | EStmt a (Stmt a)
+            deriving (Show)
+
+-- | Declarations
 data Decl a =
     DVar { vid :: ID, typ :: Type a, val :: Maybe (Expr a) }
   | DDef { did :: ID, dparams :: [(ID, Type a)], dreturns :: Maybe (Type a), dbody :: Stmt a }
@@ -109,6 +129,7 @@ data Decl a =
   | DAlias { aid :: ID, aexps :: [(Expr a)] }
   deriving (Show)
 
+-- | Statements
 data Stmt a =
     SInclude a String
   | SSkip a
@@ -126,7 +147,7 @@ data Stmt a =
   | SPragma a String
   deriving (Show)
 
--- Top level core QASM3 programs
+-- | Top level of an openQASM3 AST
 data Prog a = Prog Version [Stmt a] deriving (Show)
 
 {- Utilities -}
@@ -148,37 +169,40 @@ inLst f node                 = Left (Err $ "Malformed list: " ++ show node)
 {- Translation passes -}
 
 -- | Translation from concrete syntax to the core subset
-qasmToCore :: S.ParseNode -> Either ErrMsg (Prog S.SourceRef)
+qasmToCore :: S.ParseNode -> Either ErrMsg (Prog Lvl1)
 qasmToCore = translateProg
 
 -- | Top-level translation
-translateProg :: S.ParseNode -> Either ErrMsg (Prog S.SourceRef)
+translateProg :: S.ParseNode -> Either ErrMsg (Prog Lvl1)
 translateProg node = case node of
   S.Node (S.Program i j _) xs _ -> mapM translateStmt xs >>= return . Prog (i,j)
   _                             -> Left (Err $ "Malformed Program: " ++ show node)
 
 -- | Type translations
-translateType :: S.ParseNode -> Either ErrMsg (Type S.SourceRef)
+translateType :: S.ParseNode -> Either ErrMsg (Type Lvl1)
 translateType node = case node of
   S.Node S.BitTypeSpec [S.NilNode] c -> return $ TCBit
   S.Node S.BitTypeSpec [exprnode] c -> translateExpr exprnode >>= return . TCReg
 
-  S.Node S.IntTypeSpec _ c -> return $ TInt
+  S.Node S.IntTypeSpec [S.NilNode] c -> return $ TInt Nothing
+  S.Node S.IntTypeSpec [exprnode] c  -> translateExpr exprnode >>= return . TInt . Just
 
-  S.Node S.UintTypeSpec [S.NilNode] c -> return $ TUInt (EInt 32)
-  S.Node S.UintTypeSpec [exprnode] c -> translateExpr exprnode >>= return . TUInt
+  S.Node S.UintTypeSpec [S.NilNode] c -> return $ TUInt Nothing
+  S.Node S.UintTypeSpec [exprnode] c -> translateExpr exprnode >>= return . TUInt . Just
 
-  S.Node S.FloatTypeSpec _ c -> return $ TFloat
+  S.Node S.FloatTypeSpec [S.NilNode] c -> return $ TFloat Nothing
+  S.Node S.FloatTypeSpec [exprnode] c  -> translateExpr exprnode >>= return . TFloat . Just
 
-  S.Node S.AngleTypeSpec _ c -> return $ TAngle
+  S.Node S.AngleTypeSpec [S.NilNode] c -> return $ TAngle Nothing
+  S.Node S.AngleTypeSpec [exprnode] c  -> translateExpr exprnode >>= return . TAngle . Just
 
   S.Node S.BoolTypeSpec _ c -> return $ TBool
 
-  S.Node S.DurationTypeSpec _ c -> return $ TFloat
+  S.Node S.DurationTypeSpec _ c -> return $ TFloat Nothing
 
-  S.Node S.StretchTypeSpec _ c -> return $ TFloat
+  S.Node S.StretchTypeSpec _ c -> return $ TFloat Nothing
 
-  S.Node S.ComplexTypeSpec _ c -> return $ TCmplx
+  S.Node S.ComplexTypeSpec _ c -> return $ TCmplx Nothing
 
   S.Node S.CregTypeSpec [S.NilNode] c -> return $ TCBit
   S.Node S.CregTypeSpec [exprnode] c -> translateExpr exprnode >>= return . TCReg
@@ -205,91 +229,91 @@ translateIdent node = case node of
   _                          -> Left (Err $ "Malformed identifier: " ++ show node)
 
 -- | Access path translations
-translateAccessPath :: S.ParseNode -> Either ErrMsg (AccessPath S.SourceRef)
+translateAccessPath :: S.ParseNode -> Either ErrMsg (AccessPath Lvl1)
 translateAccessPath node = case node of
-  S.Node (S.HardwareQubit idx _) [] c -> return $ AVar ("$" ++ show idx)
+  S.Node (S.HardwareQubit idx _) [] c -> return $ AVar c ("$" ++ show idx)
 
   S.Node S.IndexedIdentifier [idnode, idxlist] c -> do
     id   <- translateIdent idnode
     idxs <- inLst translateExpr idxlist
     case idxs of
-      [idx] -> return $ AIndex id idx
+      [idx] -> return $ AIndex c id idx
       _     -> Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Multiple indices unsupported")
 
   _                          -> Left (Err $ "Malformed access path: " ++ show node)
 
 -- | Translation of Expressions
-translateExpr :: S.ParseNode -> Either ErrMsg (Expr S.SourceRef)
+translateExpr :: S.ParseNode -> Either ErrMsg (Expr Lvl1)
 translateExpr node = case node of
   S.Node S.ParenExpr [exprnode] c -> translateExpr exprnode
 
   S.Node S.IndexExpr [exprnode, idxnode] c -> do
     expr <- translateExpr exprnode
     idx  <- translateExpr idxnode
-    return $ EIndex expr idx
+    return $ EIndex c expr idx
 
   S.Node (S.UnaryOperatorExpr uop) [exprnode] c -> do
     op   <- translateUOp uop
     expr <- translateExpr exprnode
-    return $ EUOp op expr
+    return $ EUOp c op expr
 
   S.Node (S.BinaryOperatorExpr bop) [leftnode, rightnode] c -> do
     op    <- translateBOp bop
     left  <- translateExpr leftnode
     right <- translateExpr rightnode
-    return $ EBOp left op right
+    return $ EBOp c left op right
 
   S.Node S.CastExpr [exprnode] c -> translateExpr exprnode
 
   S.Node S.DurationOfExpr [stmtnode] c -> do
     stmt <- translateStmt stmtnode
-    return $ EStmt stmt
+    return $ EStmt c stmt
 
   S.Node S.CallExpr [idnode, exprnodes] c -> do
     id    <- translateIdent idnode
     exprs <- inLst translateExpr exprnodes
-    return $ ECall [] id exprs
+    return $ ECall c [] id exprs
 
   S.Node S.ArrayInitExpr _ c ->
     Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Arrays unsupported")
 
   S.Node S.SetInitExpr exprs c -> do
-    mapM translateExpr exprs >>= return . ESet
+    mapM translateExpr exprs >>= return . (ESet c)
 
   S.Node S.RangeInitExpr [beginnode, stepnode, endnode] c -> do
     begin <- translateExpr beginnode
     step <- (case stepnode of S.NilNode -> return Nothing; node -> liftM Just $ translateExpr stepnode)
     end <- translateExpr endnode
-    return $ ESlice begin step end
+    return $ ESlice c begin step end
 
   S.Node S.DimExpr [expr] c -> 
     Left (Err "Array types unsupported")
 
   S.Node S.MeasureExpr [exprnode] c -> do
     expr <- translateExpr exprnode
-    return $ EMeasure expr
+    return $ EMeasure c expr
 
-  S.Node (S.Identifier id _) [] c -> return $ EVar id
+  S.Node (S.Identifier id _) [] c -> return $ EVar c id
 
-  S.Node (S.IntegerLiteral i _) [] c -> return $ EInt (fromInteger i)
+  S.Node (S.IntegerLiteral i _) [] c -> return $ EInt c (fromInteger i)
 
-  S.Node (S.FloatLiteral r _) [] c -> return $ EFloat r
+  S.Node (S.FloatLiteral r _) [] c -> return $ EFloat c r
 
-  S.Node (S.ImaginaryLiteral r _) [] c -> return $ ECmplx (0 :+ r)
+  S.Node (S.ImaginaryLiteral r _) [] c -> return $ ECmplx c (0 :+ r)
 
-  S.Node (S.BooleanLiteral b _) [] c -> return $ EBool b
+  S.Node (S.BooleanLiteral b _) [] c -> return $ EBool c b
 
-  S.Node (S.BitstringLiteral xs _) [] c -> return $ EInt (intOfBitstring xs)
+  S.Node (S.BitstringLiteral xs _) [] c -> return $ EInt c (intOfBitstring xs)
 
-  S.Node (S.TimingLiteral _ _) [] c -> return $ EInt 0
+  S.Node (S.TimingLiteral _ _) [] c -> return $ EInt c 0
 
-  S.Node (S.HardwareQubit i _) [] c -> return $ EVar ("#" ++ show i)
+  S.Node (S.HardwareQubit i _) [] c -> return $ EVar c ("#" ++ show i)
 
   S.Node S.IndexedIdentifier [idnode, idxlist] c -> do
     id   <- translateIdent idnode
     idxs <- inLst translateExpr idxlist
     case idxs of
-      [idx] -> return $ EIndex (EVar id) idx
+      [idx] -> return $ EIndex c (EVar c id) idx
       _     -> Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Multiple indices unsupported")
 
   _                          -> Left (Err $ "Malformed expression: " ++ show node)
@@ -298,23 +322,23 @@ translateExpr node = case node of
           foldr (+) 0 . map (\(b,i) -> if b then shift 1 i else 0) $ zip xs [0..]
 
 -- | Translation of gate modifiers
-translateModifier :: S.ParseNode -> Either ErrMsg (Modifier S.SourceRef)
+translateModifier :: S.ParseNode -> Either ErrMsg (Modifier Lvl1)
 translateModifier node = case node of
   S.Node S.PowGateModifier [exprnode] c -> do
     expr <- translateExpr exprnode
-    return $ MPow expr
+    return $ MPow c expr
 
-  S.Node S.InvGateModifier [] c -> return $ MInv
+  S.Node S.InvGateModifier [] c -> return $ MInv c
 
-  S.Node S.CtrlGateModifier [S.NilNode] c -> return $ MCtrl False Nothing
+  S.Node S.CtrlGateModifier [S.NilNode] c -> return $ MCtrl c False Nothing
   S.Node S.CtrlGateModifier [exprnode] c -> do
     expr <- translateExpr exprnode
-    return $ MCtrl False (Just expr)
+    return $ MCtrl c False (Just expr)
 
-  S.Node S.NegCtrlGateModifier [S.NilNode] c -> return $ MCtrl True Nothing
+  S.Node S.NegCtrlGateModifier [S.NilNode] c -> return $ MCtrl c True Nothing
   S.Node S.NegCtrlGateModifier [exprnode] c -> do
     expr <- translateExpr exprnode
-    return $ MCtrl True (Just expr)
+    return $ MCtrl c True (Just expr)
 
   _                          -> Left (Err $ "Malformed modifier: " ++ show node)
 
@@ -325,7 +349,7 @@ translateAnnotation node = case node of
   _                                  -> Left (Err $ "Malformed annotation: " ++ show node)
 
 -- | Translation of Arguments
-translateArg :: S.ParseNode -> Either ErrMsg (ID, Type S.SourceRef)
+translateArg :: S.ParseNode -> Either ErrMsg (ID, Type Lvl1)
 translateArg node = case node of
   S.Node S.ArgumentDefinition [typespec, idnode] c -> do
     typ <- translateType typespec
@@ -335,7 +359,7 @@ translateArg node = case node of
   _                                  -> Left (Err $ "Malformed argument: " ++ show node)
 
 -- | Translation of statements
-translateStmt :: S.ParseNode -> Either ErrMsg (Stmt S.SourceRef)
+translateStmt :: S.ParseNode -> Either ErrMsg (Stmt Lvl1)
 translateStmt node = case node of
   S.NilNode -> return $ SSkip S.NilRef
   
@@ -422,7 +446,7 @@ translateStmt node = case node of
     cargs <- (case cargnodes of S.NilNode -> return []; node -> inLst translateIdent node)
     qargs <- inLst translateIdent qargnodes
     body <- translateStmt stmt
-    let args = zip cargs (repeat TCmplx) ++ zip qargs (repeat TQBit)
+    let args = zip cargs (repeat (TCmplx Nothing)) ++ zip qargs (repeat TQBit)
     return $ SDeclare c (DDef id args Nothing body)
 
   S.Node S.GateCallStmt [modnodes, idnode, paramnodes, _, argnodes] c -> do
@@ -430,7 +454,7 @@ translateStmt node = case node of
     id <- translateIdent idnode
     params <- inLst translateExpr paramnodes
     args <- inLst translateExpr argnodes
-    return $ SExpr c (ECall modifiers id (params ++ args))
+    return $ SExpr c (ECall c modifiers id (params ++ args))
     
   S.Node S.IfStmt [condnode, thennode, elsenode] c -> do
     cond <- translateExpr condnode
@@ -454,7 +478,7 @@ translateStmt node = case node of
   S.Node S.MeasureArrowAssignmentStmt [srcidexpr, tgtidexpr] c -> do
     srcid <- translateAccessPath srcidexpr
     tgtid <- translateExpr tgtidexpr
-    return $ SAssign c srcid Nothing (EMeasure tgtid)
+    return $ SAssign c srcid Nothing (EMeasure c tgtid)
 
   S.Node S.CregOldStyleDeclStmt [idnode, exprnode] c -> do
     id <- translateIdent idnode
