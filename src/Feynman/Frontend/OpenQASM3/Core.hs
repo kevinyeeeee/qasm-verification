@@ -15,10 +15,6 @@ import Data.Bits
 
 import Feynman.Core (ID)
 import qualified Feynman.Frontend.OpenQASM3.Syntax as S
-
-{- Translation levels -}
-
-type Lvl1 = S.SourceRef
   
 {- Translation errors -}
 data ErrMsg = Err String deriving Show
@@ -105,7 +101,7 @@ data Modifier a = MCtrl a Bool (Maybe (Expr a))
 -- | Expressions
 data Expr a = EVar a ID
             | EIndex a (Expr a) (Expr a)
-            | ECall a [Modifier a] ID [(Expr a)]
+            | ECall a ID [(Expr a)]
             | EMeasure a (Expr a)
             | EInt a Int
             | EFloat a Double
@@ -124,23 +120,27 @@ data Expr a = EVar a ID
 data Decl a =
     DVar { vid :: ID, typ :: Type a, val :: Maybe (Expr a) }
   | DDef { did :: ID, dparams :: [(ID, Type a)], dreturns :: Maybe (Type a), dbody :: Stmt a }
+  | DGate { gid :: ID, gparams :: [(ID, Type a)], gqargs :: [ID], gbody :: Stmt a }
   | DExtern { eid :: ID, eparams :: [(Type a)], ereturns :: Maybe (Type a) }
   | DAlias { aid :: ID, aexps :: [(Expr a)] }
   deriving (Show)
 
 -- | Statements
 data Stmt a =
-    SInclude a String
-  | SSkip a
+    SSkip a
   | SDeclare a (Decl a)
   | SBarrier a [AccessPath a]
   | SBlock a [Stmt a]
   | SExpr a (Expr a)
+  | SGateCall a [Modifier a] ID [Expr a] [AccessPath a]
   | SAssign a (AccessPath a) (Maybe BinOp) (Expr a)
   | SFor a (ID, Type a) (Expr a) (Stmt a)
+  | SBreak a
+  | SContinue a
+  | SEnd a
   | SIf a (Expr a) (Stmt a) (Stmt a)
   | SReset a (Expr a)
-  | SReturn a (Expr a)
+  | SReturn a (Maybe (Expr a))
   | SWhile a (Expr a) (Stmt a)
   | SAnnotated a [Annotation] (Stmt a)
   | SPragma a String
@@ -163,22 +163,22 @@ declID decl = case decl of
 inLst :: (S.ParseNode -> Either ErrMsg b) -> S.ParseNode -> Either ErrMsg [b]
 inLst f S.NilNode            = return []
 inLst f (S.Node S.List xs c) = mapM f xs
-inLst f node                 = Left (Err $ "Malformed list: " ++ show node)
+inLst f node                 = Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
-{- Translation passes -}
+{- First translation to core AST -}
 
 -- | Translation from concrete syntax to the core subset
-qasmToCore :: S.ParseNode -> Either ErrMsg (Prog Lvl1)
+qasmToCore :: S.ParseNode -> Either ErrMsg (Prog S.SourceRef)
 qasmToCore = translateProg
 
 -- | Top-level translation
-translateProg :: S.ParseNode -> Either ErrMsg (Prog Lvl1)
+translateProg :: S.ParseNode -> Either ErrMsg (Prog S.SourceRef)
 translateProg node = case node of
   S.Node (S.Program i j _) xs _ -> mapM translateStmt xs >>= return . Prog (i,j)
-  _                             -> Left (Err $ "Malformed Program: " ++ show node)
+  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Type translations
-translateType :: S.ParseNode -> Either ErrMsg (Type Lvl1)
+translateType :: S.ParseNode -> Either ErrMsg (Type S.SourceRef)
 translateType node = case node of
   S.Node S.BitTypeSpec [S.NilNode] c -> return $ TCBit
   S.Node S.BitTypeSpec [exprnode] c -> translateExpr exprnode >>= return . TCReg
@@ -221,14 +221,17 @@ translateType node = case node of
   S.Node S.MutableArrayRefTypeSpec _ c ->
     Left (Err "Array types unsupported")
 
+  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
+
 -- | Identifier translations
 translateIdent :: S.ParseNode -> Either ErrMsg ID
 translateIdent node = case node of
   S.Node (S.Identifier id _) [] c -> return id
-  _                          -> Left (Err $ "Malformed identifier: " ++ show node)
+
+  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Access path translations
-translateAccessPath :: S.ParseNode -> Either ErrMsg (AccessPath Lvl1)
+translateAccessPath :: S.ParseNode -> Either ErrMsg (AccessPath S.SourceRef)
 translateAccessPath node = case node of
   S.Node (S.HardwareQubit idx _) [] c -> return $ AVar c ("$" ++ show idx)
 
@@ -237,12 +240,12 @@ translateAccessPath node = case node of
     idxs <- inLst translateExpr idxlist
     case idxs of
       [idx] -> return $ AIndex c id idx
-      _     -> Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Multiple indices unsupported")
+      _     -> Left (Err "Array types unsupported")
 
-  _                          -> Left (Err $ "Malformed access path: " ++ show node)
+  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Translation of Expressions
-translateExpr :: S.ParseNode -> Either ErrMsg (Expr Lvl1)
+translateExpr :: S.ParseNode -> Either ErrMsg (Expr S.SourceRef)
 translateExpr node = case node of
   S.Node S.ParenExpr [exprnode] c -> translateExpr exprnode
 
@@ -271,17 +274,19 @@ translateExpr node = case node of
   S.Node S.CallExpr [idnode, exprnodes] c -> do
     id    <- translateIdent idnode
     exprs <- inLst translateExpr exprnodes
-    return $ ECall c [] id exprs
+    return $ ECall c id exprs
 
   S.Node S.ArrayInitExpr _ c ->
-    Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Arrays unsupported")
+    Left (Err "Array types unsupported")
 
   S.Node S.SetInitExpr exprs c -> do
     mapM translateExpr exprs >>= return . (ESet c)
 
   S.Node S.RangeInitExpr [beginnode, stepnode, endnode] c -> do
     begin <- translateExpr beginnode
-    step <- (case stepnode of S.NilNode -> return Nothing; node -> liftM Just $ translateExpr stepnode)
+    step <- case stepnode of
+      S.NilNode -> return Nothing
+      node      -> liftM Just $ translateExpr stepnode
     end <- translateExpr endnode
     return $ ESlice c begin step end
 
@@ -313,15 +318,15 @@ translateExpr node = case node of
     idxs <- inLst translateExpr idxlist
     case idxs of
       [idx] -> return $ EIndex c (EVar c id) idx
-      _     -> Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Multiple indices unsupported")
+      _     -> Left (Err "Array types unsupported")
 
-  _                          -> Left (Err $ "Malformed expression: " ++ show node)
+  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
   where intOfBitstring xs =
           foldr (+) 0 . map (\(b,i) -> if b then shift 1 i else 0) $ zip xs [0..]
 
 -- | Translation of gate modifiers
-translateModifier :: S.ParseNode -> Either ErrMsg (Modifier Lvl1)
+translateModifier :: S.ParseNode -> Either ErrMsg (Modifier S.SourceRef)
 translateModifier node = case node of
   S.Node S.PowGateModifier [exprnode] c -> do
     expr <- translateExpr exprnode
@@ -339,26 +344,26 @@ translateModifier node = case node of
     expr <- translateExpr exprnode
     return $ MCtrl c True (Just expr)
 
-  _                          -> Left (Err $ "Malformed modifier: " ++ show node)
+  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Translation of Annotations
 translateAnnotation :: S.ParseNode -> Either ErrMsg Annotation
 translateAnnotation node = case node of
   S.Node (S.Annotation _ str _) [] c -> return str
-  _                                  -> Left (Err $ "Malformed annotation: " ++ show node)
+  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Translation of Arguments
-translateArg :: S.ParseNode -> Either ErrMsg (ID, Type Lvl1)
+translateArg :: S.ParseNode -> Either ErrMsg (ID, Type S.SourceRef)
 translateArg node = case node of
   S.Node S.ArgumentDefinition [typespec, idnode] c -> do
     typ <- translateType typespec
     id <- translateIdent idnode
     return $ (id, typ)
 
-  _                                  -> Left (Err $ "Malformed argument: " ++ show node)
+  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Translation of statements
-translateStmt :: S.ParseNode -> Either ErrMsg (Stmt Lvl1)
+translateStmt :: S.ParseNode -> Either ErrMsg (Stmt S.SourceRef)
 translateStmt node = case node of
   S.NilNode -> return $ SSkip S.NilRef
   
@@ -391,7 +396,7 @@ translateStmt node = case node of
 
   S.Node S.BoxStmt [_, scope@(S.Node S.Scope _ _)] _ -> translateStmt scope
 
-  S.Node S.BreakStmt [] c -> Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Break unsupported")
+  S.Node S.BreakStmt [] c -> return $ SBreak c
 
   S.Node (S.CalStmt _) [] c -> return $ SSkip c
   S.Node (S.DefcalgrammarStmt _ _) [] c -> return $ SSkip c
@@ -399,7 +404,9 @@ translateStmt node = case node of
   S.Node S.ClassicalDeclStmt [typespec, idnode, initexpr] c -> do
     ty <- translateType typespec
     id <- translateIdent idnode
-    expr <- (case initexpr of S.NilNode -> return Nothing; node -> liftM Just $ translateExpr node)
+    expr <- case initexpr of
+      S.NilNode -> return Nothing
+      node -> liftM Just $ translateExpr node
     return $ SDeclare c (DVar id ty expr)
 
   S.Node S.ConstDeclStmt [typespec, idnode, initexpr] c -> do
@@ -408,13 +415,14 @@ translateStmt node = case node of
     expr <- translateExpr initexpr
     return $ SDeclare c (DVar id ty (Just expr))
 
-  S.Node S.ContinueStmt [] c   ->
-    Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Continue unsupported")
+  S.Node S.ContinueStmt [] c   -> return $ SContinue c
 
   S.Node S.DefStmt [idnode, argnodes, rettype, stmt] c -> do
     id <- translateIdent idnode
     args <- inLst translateArg argnodes
-    ret <- (case rettype of S.NilNode -> return Nothing; node -> liftM Just $ translateType node)
+    ret <- case rettype of
+      S.NilNode -> return Nothing
+      node -> liftM Just $ translateType node
     body <- translateStmt stmt
     return $ SDeclare c (DDef id args ret body)
 
@@ -422,7 +430,7 @@ translateStmt node = case node of
 
   S.Node S.DelayStmt _ c -> return $ SSkip c
 
-  S.Node S.EndStmt [] c -> Left (Err $ "Error at " ++ (S.pp_source c) ++ ": End unsupported")
+  S.Node S.EndStmt [] c -> return $ SEnd c
 
   S.Node S.ExpressionStmt [exprnode] c -> 
     translateExpr exprnode >>= return . SExpr c
@@ -430,7 +438,9 @@ translateStmt node = case node of
   S.Node S.ExternStmt [idnode, typenodes, rettype] c -> do
     id <- translateIdent idnode
     types <- inLst translateType typenodes
-    ret <- (case rettype of S.NilNode -> return Nothing; node -> liftM Just $ translateType node)
+    ret <- case rettype of
+      S.NilNode -> return Nothing
+      node -> liftM Just $ translateType node
     return $ SDeclare c (DExtern id types ret)
 
   S.Node S.ForStmt [typenode, idnode, exprnode, stmtnode] c -> do
@@ -442,18 +452,20 @@ translateStmt node = case node of
 
   S.Node S.GateStmt [idnode, cargnodes, qargnodes, stmt] c -> do
     id <- translateIdent idnode
-    cargs <- (case cargnodes of S.NilNode -> return []; node -> inLst translateIdent node)
+    cargs <- case cargnodes of
+      S.NilNode -> return []
+      node -> inLst translateIdent node
     qargs <- inLst translateIdent qargnodes
     body <- translateStmt stmt
-    let args = zip cargs (repeat (TCmplx Nothing)) ++ zip qargs (repeat TQBit)
-    return $ SDeclare c (DDef id args Nothing body)
+    let args = zip cargs (repeat (TAngle Nothing))
+    return $ SDeclare c (DGate id args qargs body)
 
   S.Node S.GateCallStmt [modnodes, idnode, paramnodes, _, argnodes] c -> do
     modifiers <- inLst translateModifier modnodes
     id <- translateIdent idnode
     params <- inLst translateExpr paramnodes
-    args <- inLst translateExpr argnodes
-    return $ SExpr c (ECall c modifiers id (params ++ args))
+    args <- inLst translateAccessPath argnodes
+    return $ SGateCall c modifiers id params args
     
   S.Node S.IfStmt [condnode, thennode, elsenode] c -> do
     cond <- translateExpr condnode
@@ -504,15 +516,19 @@ translateStmt node = case node of
     expr <- translateExpr exprnode
     return $ SReset c expr
 
-  S.Node S.ReturnStmt [] c   ->
-    Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Return unsupported")
+  S.Node S.ReturnStmt [exprnode] c -> do
+    case exprnode of
+      S.NilNode -> return $ SReturn c Nothing
+      node -> do
+        expr <- translateExpr node
+        return $ SReturn c (Just expr)
 
   S.Node S.WhileStmt [condnode, bodynode] c -> do
     cond <- translateExpr condnode
     body <- translateStmt bodynode
     return $ SWhile c cond body
 
-  _                           -> Left (Err $ "Malformed statement: " ++ show node)
+  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Translation of unary operators
 translateUOp :: S.Token -> Either ErrMsg UOp
