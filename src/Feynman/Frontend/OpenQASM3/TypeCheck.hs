@@ -22,7 +22,7 @@ import Feynman.Frontend.OpenQASM3.Core
 {- Types -}
 
 -- | Type elaborate with compile-time constant declarations
-data ElaboratedType = EType { ty :: Type (),
+data ElaboratedType = EType { ty :: ResolvedType,
                               const :: Bool
                             } deriving (Show)
 
@@ -50,6 +50,112 @@ getBinding x = do
   env <- get
   return . msum . map (Map.lookup x) $ scopes env ++ [constants env]
 
+{- Casting behaviour -}
+
+-- | Casting rules for openQASM 3 types
+castable :: ResolvedType -> ResolvedType -> Bool
+castable from to = case from of
+  TBool -> case to of
+    TBool    -> True
+    TInt _   -> True
+    TUInt _  -> True
+    TFloat _ -> True
+    TCReg _  -> True
+    _        -> False
+  TInt _ -> case to of
+    TBool    -> True
+    TInt _   -> True
+    TUInt _  -> True
+    TFloat _ -> True
+    TCReg _  -> True
+    _        -> False
+  TUInt _ -> case to of
+    TBool    -> True
+    TInt _   -> True
+    TUInt _  -> True
+    TFloat _ -> True
+    TCReg _  -> True
+    _        -> False
+  TFloat _ -> case to of
+    TBool    -> True
+    TInt _   -> True
+    TUInt _  -> True
+    TFloat _ -> True
+    TAngle _ -> True
+    _        -> False
+  TAngle _ -> case to of
+    TBool   -> True
+    TAngle _-> True
+    TCReg _ -> True
+    _       -> False
+  TCReg _ -> case to of
+    TBool    -> True
+    TInt _   -> True
+    TUInt _ -> True
+    TAngle _-> True
+    TCReg _ -> True
+    _         -> False
+  TQBit -> case to of
+    TQBit -> True
+    _     -> False
+  TQReg _ -> case to of
+    TQReg _ -> True
+    _       -> False
+  _ -> False
+
+-- | Unification of types in expressions
+--
+--   Based on the greater than relation in the openQASM 3 and integer promotion rules (C99)
+unify :: ResolvedType -> ResolvedType -> Maybe ResolvedType
+unify a b | a == b = Just a
+          | otherwise = case a of
+              TBool -> case b of
+                TBool    -> Just $ TBool
+                TInt j   -> Just $ TInt j
+                TUInt j  -> Just $ TUInt j
+                TFloat j -> Just $ TFloat j
+                TCmplx j -> Just $ TCmplx j
+                _        -> Nothing
+              TInt i -> case b of
+                TBool    -> Just $ TInt i
+                TInt j   -> Just $ TInt (unifyWidth i j)
+                TUInt j  -> Just $ TInt (unifyWidth i (fmap (+1) j))
+                TFloat j -> Just $ TFloat j
+                TCmplx j -> Just $ TCmplx j
+                _        -> Nothing
+              TUInt i -> case b of
+                TBool    -> Just $ TUInt i
+                TInt j   -> Just $ TInt (unifyWidth (fmap (+1) i) j)
+                TUInt j  -> Just $ TUInt (unifyWidth i j)
+                TFloat j -> Just $ TFloat j
+                TCmplx j -> Just $ TCmplx j
+                _        -> Nothing
+              TFloat i -> case b of
+                TBool    -> Just $ TFloat i
+                TInt j   -> Just $ TFloat i
+                TUInt j  -> Just $ TFloat i
+                TFloat j -> Just $ TFloat (unifyWidth i j)
+                TCmplx j -> Just $ TCmplx j
+                _        -> Nothing
+              TCmplx i -> case b of
+                TBool    -> Just $ TCmplx i
+                TInt j   -> Just $ TCmplx i
+                TUInt j  -> Just $ TCmplx i
+                TFloat j -> Just $ TCmplx i
+                TCmplx j -> Just $ TCmplx (unifyWidth i j)
+                _        -> Nothing
+              TAngle i -> case b of
+                TAngle j -> Just $ TAngle (unifyWidth i j)
+                _        -> Nothing
+              TCReg i -> case b of
+                TCReg j -> Just $ TCReg (max i j)
+                _       -> Nothing
+
+-- | Unifies widths of sized types
+unifyWidth :: Maybe Int -> Maybe Int -> Maybe Int
+unifyWidth Nothing  _        = Nothing
+unifyWidth _        Nothing  = Nothing
+unifyWidth (Just i) (Just j) = Just (max i j)
 
 {- Semantic analysis & type checking -}
 

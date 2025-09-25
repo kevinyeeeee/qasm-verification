@@ -68,24 +68,28 @@ data BinOp = AndOp -- &, &&
 
 
 -- | OpenQASM 3 types. Arrays are currently unsupported
-data Type a = TCBit          
-            | TCReg  (Expr a) 
-            | TQBit          
-            | TQReg  (Expr a)
-            -- Classical types
-            | TBool
-            | TUInt  (Maybe (Expr a))
-            | TInt   (Maybe (Expr a))
-            | TAngle (Maybe (Expr a))
-            | TFloat (Maybe (Expr a))
-            | TCmplx (Maybe (Expr a)) -- Corresponds to openQASM 3 type cmplx[float[expr]]
-            -- Non-syntactic types
-            | TUnit
-            | TProc { isGate :: Bool,
-                      argTypes :: [Type a],
-                      returnType :: Maybe (Type a)
-                    }
-            deriving (Show)
+--
+--   Parameterized by the type of type arguments
+data OpenType a = TCReg  a 
+                | TQBit          
+                | TQReg  a
+                -- Classical types
+                | TBool
+                | TUInt  (Maybe a)
+                | TInt   (Maybe a)
+                | TAngle (Maybe a)
+                | TFloat (Maybe a)
+                | TCmplx (Maybe a) -- Corresponds to openQASM 3 type cmplx[float[expr]]
+                -- Non-syntactic types
+                | TUnit
+                | TProc { isGate :: Bool,
+                          argTypes :: [OpenType a],
+                          returnType :: Maybe (OpenType a)
+                        }
+                deriving (Show, Eq)
+
+type Type a       = OpenType (Expr a)
+type ResolvedType = OpenType Int
 
 -- | Access paths. Either a variable or an index into a register/bit array
 data AccessPath a = AVar a ID
@@ -114,6 +118,7 @@ data Expr a = EVar a ID
             | EUOp a UOp (Expr a)
             | EBOp a (Expr a) BinOp (Expr a)
             | EStmt a (Stmt a)
+            | ECast a (Type a) (Expr a)
             deriving (Show)
 
 -- | Declarations
@@ -180,7 +185,7 @@ translateProg node = case node of
 -- | Type translations
 translateType :: S.ParseNode -> Either ErrMsg (Type S.SourceRef)
 translateType node = case node of
-  S.Node S.BitTypeSpec [S.NilNode] c -> return $ TCBit
+  S.Node S.BitTypeSpec [S.NilNode] c -> return $ TBool
   S.Node S.BitTypeSpec [exprnode] c -> translateExpr exprnode >>= return . TCReg
 
   S.Node S.IntTypeSpec [S.NilNode] c -> return $ TInt Nothing
@@ -203,7 +208,7 @@ translateType node = case node of
 
   S.Node S.ComplexTypeSpec _ c -> return $ TCmplx Nothing
 
-  S.Node S.CregTypeSpec [S.NilNode] c -> return $ TCBit
+  S.Node S.CregTypeSpec [S.NilNode] c -> return $ TBool
   S.Node S.CregTypeSpec [exprnode] c -> translateExpr exprnode >>= return . TCReg
 
   S.Node S.QregTypeSpec [S.NilNode] c -> return $ TQBit
@@ -494,7 +499,7 @@ translateStmt node = case node of
   S.Node S.CregOldStyleDeclStmt [idnode, exprnode] c -> do
     id <- translateIdent idnode
     case exprnode of
-      S.NilNode -> return $ SDeclare c (DVar id TCBit Nothing)
+      S.NilNode -> return $ SDeclare c (DVar id TBool Nothing)
       node      -> do
         expr <- translateExpr node
         return $ SDeclare c (DVar id (TCReg expr) Nothing)
