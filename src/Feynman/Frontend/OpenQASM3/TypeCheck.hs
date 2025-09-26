@@ -26,6 +26,14 @@ data ElaboratedType = EType { ty :: ResolvedType,
                               const :: Bool
                             } deriving (Show)
 
+-- | Insert a type into an elaborated type
+pureType :: ResolvedType -> ElaboratedType
+pureType ty = EType ty False
+
+-- | Insert a constant type into an elaborated type
+constType :: ResolvedType -> ElaboratedType
+constType ty = EType ty True
+
 -- | Type checking environment, consisting of bindings to
 --   elaborate types and a list of error messages
 data Env = Env { constants :: Map ID ElaboratedType,
@@ -41,8 +49,16 @@ emptyEnv :: Env
 emptyEnv = Env Map.empty [Map.empty] []
 
 -- | Logs an error message
-log :: ErrMsg -> TC ()
-log msg = modify (\env -> env { errs = errs env ++ [msg] })
+logMsg :: String -> TC ()
+logMsg msg = modify (\env -> env { errs = errs env ++ [Err msg] })
+
+-- | Pushes a new scope onto the stack
+pushScope :: TC ()
+pushScope = modify (\env -> env { scopes = Map.empty:(scopes env) })
+
+-- | Pops the local scope off the stack
+popScope :: TC ()
+popScope = modify (\env -> env { scopes = Map.empty:(scopes env) })
 
 -- | Looks up an identifier, beginning with the inner-most scope
 getBinding :: ID -> TC (Maybe ElaboratedType)
@@ -159,3 +175,82 @@ unifyWidth (Just i) (Just j) = Just (max i j)
 
 {- Semantic analysis & type checking -}
 
+-- | Program type checking
+tcProg :: Prog Location -> TC (Prog ElaboratedType)
+tcProg (Prog ver xs) = liftM (Prog ver) $ mapM tcStmt xs
+
+-- | Declaration type checking
+tcDecl :: Decl Location -> TC (Decl ElaboratedType)
+tcDecl _ = error "Unimplemented"
+
+-- | Statement type checking. Expands some statements
+--   to lists of statements
+tcStmt :: Stmt Location -> TC (Stmt ElaboratedType)
+tcStmt stmt = case stmt of
+  SSkip loc -> return $ SSkip unitTy
+
+  SDeclare loc decl -> liftM (SDeclare unitTy) $ tcDecl decl
+
+  SBarrier loc xs -> liftM (SBarrier unitTy) $ mapM tcAccessPath xs
+
+  SBlock loc xs -> do
+    pushScope
+    stmts <- mapM tcStmt xs
+    popScope
+    return $ SBlock unitTy stmts
+
+  SExpr loc expr -> liftM (SExpr unitTy) $ tcExpr expr
+
+  SGateCall loc mods id cargs qargs -> getBinding id >>= \record -> case record of
+
+    Nothing -> do
+      logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ id
+      return $ SGateCall unitTy [] id [] []
+
+    Just (EType _ (TGate nC nQ)) -> do
+      mods <- mapM tcModifier mods
+      cargs <- mapM tcExprAs (TFloat Nothing) cargs
+      qargs <- mapM tcAccessPath qargs
+      case broadcast qargs of
+        []      -> logMsg "Type error at (" ++ show loc ++ "): Gate arguments not broadcastable" >>
+                   return $ SGateCall unitTy loc mods id cargs qargs
+        [qargs] -> return $ SGateCall unitTy loc mods id cargs qargs
+        [xs]    -> return $ SBlock unitTy $
+                     [SGateCall unitTy loc mods id cargs qargs | qargs <- xs]
+
+  where unitTy = EType TUnit False
+    
+-- | Broadcasting gate arguments
+broadcast :: [AccessPath ElaboratedType] -> TC [AccessPath ElaboratedType]
+broadcast _ = error "Unimplemented"
+
+-- | Expression type checking
+tcExpr :: Expr Location -> TC (Expr ElaboratedType)
+tcExpr _ = error "Unimplemented"
+
+-- | Type checks an expression as a particular type, inserting
+--   a cast as needed
+tcExprAs :: Expr Location -> ResolvedType -> TC (Expr ElaboratedType)
+tcExprAs expr typ = do
+  expr <- tcExpr expr
+  let exprType = getAnnotation expr
+  if typ == ty (exprType) then
+    return expr
+  else case castable (ty exprType) typ of
+    False -> do
+      logMsg $ "Type error at (" ++ show (getAnnotation expr) ++ "): " ++
+               "Expected type " ++ show typ ++ ", got " ++ show (ty exprType)
+      return $ expr
+    True -> return $ ECast (exprType { ty = typ }) typ expr 
+
+-- | Expression type checking
+tcModifier :: Modifier Location -> TC (Modifier ElaboratedType)
+tcModifier _ = error "Unimplemented"
+
+-- | Access Path type checking
+tcAccessPath :: AccessPath Location -> TC (AccessPath ElaboratedType)
+tcAccessPath _ = error "Unimplemented"
+
+-- | Resolves a type
+resolveType :: Type Location -> TC ResolvedType
+resolveType _ = error "Unimplemented"

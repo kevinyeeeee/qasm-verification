@@ -1,3 +1,5 @@
+{-# LANGUAGE KindSignatures #-}
+
 {-|
 Module      : Core
 Description : Core openQASM 3 syntax
@@ -20,10 +22,15 @@ import qualified Feynman.Frontend.OpenQASM3.Syntax as S
 data ErrMsg = Err String deriving Show
 
 {- Convenience types -}
+type Location   = S.SourceRef
 type Annotation = String
 type Version    = (Int, Maybe Int)
 
 {- Core AST -}
+
+-- | Type class for data annotated with an /a/
+class Annotated (f :: * -> *) where
+  getAnnotation :: f a -> a
 
 -- | Unary operators
 data UOp = SinOp
@@ -82,10 +89,8 @@ data OpenType a = TCReg  a
                 | TCmplx (Maybe a) -- Corresponds to openQASM 3 type cmplx[float[expr]]
                 -- Non-syntactic types
                 | TUnit
-                | TProc { isGate :: Bool,
-                          argTypes :: [OpenType a],
-                          returnType :: Maybe (OpenType a)
-                        }
+                | TGate { numCargs :: Int, numQargs :: Int }
+                | TProc { argTypes :: [OpenType a], returnType :: Maybe (OpenType a) }
                 deriving (Show, Eq)
 
 type Type a       = OpenType (Expr a)
@@ -96,11 +101,20 @@ data AccessPath a = AVar a ID
                   | AIndex a ID (Expr a)
                   deriving (Show)
 
+instance Annotated AccessPath where
+  getAnnotation (AVar a _) = a
+  getAnnotation (AIndex a _ _) = a
+
 -- | Gate modifiers
 data Modifier a = MCtrl a Bool (Maybe (Expr a))
                 | MInv a
                 | MPow a (Expr a)
                 deriving (Show)
+
+instance Annotated Modifier where
+  getAnnotation (MCtrl a _ _) = a
+  getAnnotation (MInv a) = a
+  getAnnotation (MPow a _) = a
 
 -- | Expressions
 data Expr a = EVar a ID
@@ -120,6 +134,25 @@ data Expr a = EVar a ID
             | EStmt a (Stmt a)
             | ECast a (Type a) (Expr a)
             deriving (Show)
+
+instance Annotated Expr where
+  getAnnotation expr = case expr of
+    EVar a _ -> a
+    EIndex a _ _ -> a
+    ECall a _ _ -> a
+    EMeasure a _ -> a
+    EInt a _ -> a
+    EFloat a _ -> a
+    ECmplx a _ -> a
+    ESlice a _ _ _ -> a
+    ESet a _ -> a
+    EPi a -> a
+    EIm a -> a
+    EBool a _ -> a
+    EUOp a _ _ -> a
+    EBOp a _ _ _ -> a
+    EStmt a _ -> a
+    ECast a _ _ -> a
 
 -- | Declarations
 data Decl a =
@@ -173,17 +206,17 @@ inLst f node                 = Left (Err $ "Fatal: malformed ast node (" ++ show
 {- First translation to core AST -}
 
 -- | Translation from concrete syntax to the core subset
-qasmToCore :: S.ParseNode -> Either ErrMsg (Prog S.SourceRef)
+qasmToCore :: S.ParseNode -> Either ErrMsg (Prog Location)
 qasmToCore = translateProg
 
 -- | Top-level translation
-translateProg :: S.ParseNode -> Either ErrMsg (Prog S.SourceRef)
+translateProg :: S.ParseNode -> Either ErrMsg (Prog Location)
 translateProg node = case node of
   S.Node (S.Program i j _) xs _ -> mapM translateStmt xs >>= return . Prog (i,j)
   _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Type translations
-translateType :: S.ParseNode -> Either ErrMsg (Type S.SourceRef)
+translateType :: S.ParseNode -> Either ErrMsg (Type Location)
 translateType node = case node of
   S.Node S.BitTypeSpec [S.NilNode] c -> return $ TBool
   S.Node S.BitTypeSpec [exprnode] c -> translateExpr exprnode >>= return . TCReg
@@ -236,7 +269,7 @@ translateIdent node = case node of
   _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Access path translations
-translateAccessPath :: S.ParseNode -> Either ErrMsg (AccessPath S.SourceRef)
+translateAccessPath :: S.ParseNode -> Either ErrMsg (AccessPath Location)
 translateAccessPath node = case node of
   S.Node (S.HardwareQubit idx _) [] c -> return $ AVar c ("$" ++ show idx)
 
@@ -250,7 +283,7 @@ translateAccessPath node = case node of
   _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Translation of Expressions
-translateExpr :: S.ParseNode -> Either ErrMsg (Expr S.SourceRef)
+translateExpr :: S.ParseNode -> Either ErrMsg (Expr Location)
 translateExpr node = case node of
   S.Node S.ParenExpr [exprnode] c -> translateExpr exprnode
 
@@ -331,7 +364,7 @@ translateExpr node = case node of
           foldr (+) 0 . map (\(b,i) -> if b then shift 1 i else 0) $ zip xs [0..]
 
 -- | Translation of gate modifiers
-translateModifier :: S.ParseNode -> Either ErrMsg (Modifier S.SourceRef)
+translateModifier :: S.ParseNode -> Either ErrMsg (Modifier Location)
 translateModifier node = case node of
   S.Node S.PowGateModifier [exprnode] c -> do
     expr <- translateExpr exprnode
@@ -358,7 +391,7 @@ translateAnnotation node = case node of
   _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Translation of Arguments
-translateArg :: S.ParseNode -> Either ErrMsg (ID, Type S.SourceRef)
+translateArg :: S.ParseNode -> Either ErrMsg (ID, Type Location)
 translateArg node = case node of
   S.Node S.ArgumentDefinition [typespec, idnode] c -> do
     typ <- translateType typespec
@@ -368,7 +401,7 @@ translateArg node = case node of
   _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Translation of statements
-translateStmt :: S.ParseNode -> Either ErrMsg (Stmt S.SourceRef)
+translateStmt :: S.ParseNode -> Either ErrMsg (Stmt Location)
 translateStmt node = case node of
   S.NilNode -> return $ SSkip S.NilRef
   
