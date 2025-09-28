@@ -14,6 +14,7 @@ import Control.Monad.State
 
 import Data.Map (Map)
 import qualified Data.Map as Map
+import Data.Maybe (fromJust)
 
 import Feynman.Core (ID)
 import qualified Feynman.Frontend.OpenQASM3.Syntax as S
@@ -22,17 +23,21 @@ import Feynman.Frontend.OpenQASM3.Core
 {- Types -}
 
 -- | Type elaborate with compile-time constant declarations
-data ElaboratedType = EType { ty :: ResolvedType,
+data ElaboratedType = EType { ty :: Type,
                               const :: Bool
                             } deriving (Show)
 
 -- | Insert a type into an elaborated type
-pureType :: ResolvedType -> ElaboratedType
+pureType :: Type -> ElaboratedType
 pureType ty = EType ty False
 
 -- | Insert a constant type into an elaborated type
-constType :: ResolvedType -> ElaboratedType
+constType :: Type -> ElaboratedType
 constType ty = EType ty True
+
+-- | Gets the base type of an AST node annotated with an elaborated type
+typeof :: Annotated f => f ElaboratedType -> Type
+typeof = ty . getAnnotation
 
 -- | Type checking environment, consisting of bindings to
 --   elaborate types and a list of error messages
@@ -66,10 +71,43 @@ getBinding x = do
   env <- get
   return . msum . map (Map.lookup x) $ scopes env ++ [constants env]
 
+-- | Assigns a binding to an identifier. Causes an error if the identifier has a
+--   binding in the current scope
+assign :: ID -> ElaboratedType -> TC ()
+assign var typ = do
+  env <- get
+  case Map.lookup var (head $ scopes env) of
+    Nothing -> put $ env{scopes = (Map.insert var typ . head $ scopes env):(tail $ scopes env)}
+    Just _  -> do
+      logMsg $ "Error: Declaration of " ++ var ++ " shadows existing definition"
+      return ()
+
+{- Indexing behaviour -}
+
+-- | Checks whether a type can be indexed
+isIndexable :: Type -> Bool
+isIndexable typ = case typ of
+  TCReg _  -> True
+  TQReg _  -> True
+  TInt _   -> True
+  TUInt _  -> True
+  TAngle _ -> True
+  _        -> False
+
+-- | Returns the type of an indexed value of an indexable type
+dereference :: Type -> Type
+dereference typ = case typ of
+  TCReg _  -> TBool
+  TQReg _  -> TQBit
+  TInt _   -> TBool
+  TUInt _  -> TBool
+  TAngle _ -> TBool
+  _        -> error "Unexpected error: type is not indexable"
+
 {- Casting behaviour -}
 
 -- | Casting rules for openQASM 3 types
-castable :: ResolvedType -> ResolvedType -> Bool
+castable :: Type -> Type -> Bool
 castable from to = case from of
   TBool -> case to of
     TBool    -> True
@@ -78,19 +116,19 @@ castable from to = case from of
     TFloat _ -> True
     TCReg _  -> True
     _        -> False
-  TInt _ -> case to of
+  TInt i -> case to of
     TBool    -> True
     TInt _   -> True
     TUInt _  -> True
     TFloat _ -> True
-    TCReg _  -> True
+    TCReg j  -> i == Just j
     _        -> False
-  TUInt _ -> case to of
+  TUInt i -> case to of
     TBool    -> True
     TInt _   -> True
     TUInt _  -> True
     TFloat _ -> True
-    TCReg _  -> True
+    TCReg j  -> i == Just j
     _        -> False
   TFloat _ -> case to of
     TBool    -> True
@@ -99,17 +137,17 @@ castable from to = case from of
     TFloat _ -> True
     TAngle _ -> True
     _        -> False
-  TAngle _ -> case to of
-    TBool   -> True
-    TAngle _-> True
-    TCReg _ -> True
-    _       -> False
-  TCReg _ -> case to of
+  TAngle i -> case to of
     TBool    -> True
-    TInt _   -> True
-    TUInt _ -> True
-    TAngle _-> True
-    TCReg _ -> True
+    TAngle _ -> True
+    TCReg j  -> i == Just j
+    _        -> False
+  TCReg i -> case to of
+    TBool    -> True
+    TInt j   -> Just i == j
+    TUInt j  -> Just i == j
+    TAngle j -> Just i == j
+    TCReg j  -> i == j
     _         -> False
   TQBit -> case to of
     TQBit -> True
@@ -122,7 +160,7 @@ castable from to = case from of
 -- | Unification of types in expressions
 --
 --   Based on the greater than relation in the openQASM 3 and integer promotion rules (C99)
-unify :: ResolvedType -> ResolvedType -> Maybe ResolvedType
+unify :: Type -> Type -> Maybe Type
 unify a b | a == b = Just a
           | otherwise = case a of
               TBool -> case b of
@@ -207,30 +245,77 @@ tcStmt stmt = case stmt of
       logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ id
       return $ SGateCall unitTy [] id [] []
 
-    Just (EType _ (TGate nC nQ)) -> do
+    Just (EType (TGate nC nQ) _) -> do
       mods <- mapM tcModifier mods
-      cargs <- mapM tcExprAs (TFloat Nothing) cargs
-      qargs <- mapM tcAccessPath qargs
-      case broadcast qargs of
-        []      -> logMsg "Type error at (" ++ show loc ++ "): Gate arguments not broadcastable" >>
-                   return $ SGateCall unitTy loc mods id cargs qargs
-        [qargs] -> return $ SGateCall unitTy loc mods id cargs qargs
-        [xs]    -> return $ SBlock unitTy $
-                     [SGateCall unitTy loc mods id cargs qargs | qargs <- xs]
+      cargs <- mapM (flip tcExprAs (TFloat Nothing)) cargs
+      qargs <- broadcast =<< mapM tcAccessPath qargs
+      case qargs of
+        []      -> do
+          logMsg $ "Type error at (" ++ show loc ++ "): Gate arguments not broadcastable"
+          return $ SGateCall unitTy mods id cargs []
+        [qargs] -> return $ SGateCall unitTy mods id cargs qargs
+        _       -> return $ SBlock unitTy $ map (SGateCall unitTy mods id cargs) qargs
+
+  SAssign loc ap expr -> do
+    ap <- tcAccessPath ap
+    expr <- tcExprAs expr (typeof ap)
+    return $ SAssign unitTy ap expr
+
+  SFor loc (var, typ) expr stmt -> do
+    typ <- resolveType typ
+    expr <- tcExprAs expr (TRange typ)
+    pushScope
+    assign var (EType typ False)
+    stmt <- tcStmt stmt
+    popScope
+    return $ SFor unitTy (var, asTypeExpr (pureType $ TInt Nothing) typ) expr stmt
+
+  SBreak loc    -> return $ SBreak unitTy
+  SContinue loc -> return $ SContinue unitTy
+  SEnd loc      -> return $ SEnd unitTy
+
+  SIf loc expr stmt stmt' -> do
+    expr <- tcExprAs expr TBool
+    stmt <- tcStmt stmt
+    stmt' <- tcStmt stmt'
+    return $ SIf unitTy expr stmt stmt'
+
+  SReset loc expr -> do
+    expr <- tcExprAs expr TQBit
+    return $ SReset unitTy expr
+    
+  SReturn loc mexpr -> do
+    mexpr <- mapM tcExpr mexpr
+    return $ SReturn unitTy mexpr
+
+  SWhile loc expr stmt -> do
+    expr <- tcExprAs expr TBool
+    stmt <- tcStmt stmt
+    return $ SWhile unitTy expr stmt
+
+  SAnnotated loc annots stmt -> do
+    stmt <- tcStmt stmt
+    return $ SAnnotated unitTy annots stmt
+
+  SPragma loc str -> return $ SPragma unitTy str
 
   where unitTy = EType TUnit False
     
 -- | Broadcasting gate arguments
-broadcast :: [AccessPath ElaboratedType] -> TC [AccessPath ElaboratedType]
+broadcast :: [AccessPath ElaboratedType] -> TC [[AccessPath ElaboratedType]]
 broadcast _ = error "Unimplemented"
 
 -- | Expression type checking
 tcExpr :: Expr Location -> TC (Expr ElaboratedType)
 tcExpr _ = error "Unimplemented"
 
+-- | Evaluates a suitably typed expression as a UInt
+evalUInt :: Expr ElaboratedType -> TC Int
+evalUInt _ = error "Unimplemented"
+
 -- | Type checks an expression as a particular type, inserting
 --   a cast as needed
-tcExprAs :: Expr Location -> ResolvedType -> TC (Expr ElaboratedType)
+tcExprAs :: Expr Location -> Type -> TC (Expr ElaboratedType)
 tcExprAs expr typ = do
   expr <- tcExpr expr
   let exprType = getAnnotation expr
@@ -241,16 +326,71 @@ tcExprAs expr typ = do
       logMsg $ "Type error at (" ++ show (getAnnotation expr) ++ "): " ++
                "Expected type " ++ show typ ++ ", got " ++ show (ty exprType)
       return $ expr
-    True -> return $ ECast (exprType { ty = typ }) typ expr 
+    True -> let tyInt = pureType $ TInt Nothing in
+      return $ ECast (exprType { ty = typ }) (asTypeExpr tyInt typ) expr
 
 -- | Expression type checking
 tcModifier :: Modifier Location -> TC (Modifier ElaboratedType)
-tcModifier _ = error "Unimplemented"
+tcModifier mod = case mod of
+  MCtrl loc neg mexpr -> do
+    mexpr <- mapM (flip tcExprAs (TUInt Nothing)) mexpr
+    return $ MCtrl (pureType TUnit) neg mexpr
+  MInv loc -> return $ MInv (pureType TUnit)
+  MPow loc expr -> do
+    expr <- tcExprAs expr (TUInt Nothing)
+    return $ MPow (pureType TUnit) expr
 
 -- | Access Path type checking
 tcAccessPath :: AccessPath Location -> TC (AccessPath ElaboratedType)
-tcAccessPath _ = error "Unimplemented"
+tcAccessPath ap = case ap of
+  AVar loc var -> do
+    typ <- getBinding var
+    case typ of
+      Nothing -> do
+        logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ var
+        return $ AVar (pureType TUnit) var
+      Just typ -> return $ AVar typ var
+  AIndex loc var expr -> do
+    typ <- getBinding var
+    expr <- tcExpr expr
+    case (typ, isIndexable (ty $ fromJust typ), typeof expr) of
+      (Nothing, _, _) -> do
+        logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ var
+        return $ AVar (pureType TUnit) var
+      (Just typ, False, _) -> do
+        logMsg $ "Type error at (" ++ show loc ++ "): variable " ++ var ++ " cannot be indexed"
+        return $ AIndex typ var expr
+      (Just typ, _, TRange idxTyp) | castable idxTyp (TUInt Nothing) ->
+        return $ AIndex typ var expr
+      (Just typ, _, idxTyp) | castable idxTyp (TUInt Nothing) ->
+        return $ AIndex (typ { ty = dereference (ty typ) }) var expr
+      _ -> do
+        logMsg $ "Type error at (" ++ show loc ++ "): invalid index type"
+        return $ AIndex (pureType TUnit) var expr
 
 -- | Resolves a type
-resolveType :: Type Location -> TC ResolvedType
-resolveType _ = error "Unimplemented"
+resolveType :: TypeExpr Location -> TC Type
+resolveType typ = case typ of
+  TCReg expr  -> tcSize expr >>= return . TCReg
+  TQBit       -> return TQBit
+  TQReg expr  -> tcSize expr >>= return . TQReg
+  TBool       -> return TBool
+  TUInt expr  -> mapM tcSize expr >>= return . TUInt
+  TInt expr   -> mapM tcSize expr >>= return . TInt
+  TAngle expr -> mapM tcSize expr >>= return . TAngle
+  TFloat expr -> mapM tcSize expr >>= return . TFloat
+  TCmplx expr -> mapM tcSize expr >>= return . TCmplx
+  TUnit       -> return TUnit
+  TRange ty   -> resolveType ty >>= return . TRange
+  TGate nc nq -> return $ TGate nc nq
+  TProc at rt -> pure TProc <*> mapM resolveType at <*> mapM resolveType rt
+
+  where
+
+    tcSize = tcExpr >=> resolveExpr
+
+    resolveExpr expr = case getAnnotation expr of
+      EType _ False -> do
+        logMsg $ "Error: type parameterized by non-constant expression"
+        return $ 0
+      EType typ True | castable typ (TUInt Nothing) -> evalUInt expr

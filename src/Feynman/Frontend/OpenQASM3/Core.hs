@@ -77,24 +77,39 @@ data BinOp = AndOp -- &, &&
 -- | OpenQASM 3 types. Arrays are currently unsupported
 --
 --   Parameterized by the type of type arguments
-data OpenType a = TCReg  a 
-                | TQBit          
-                | TQReg  a
-                -- Classical types
-                | TBool
-                | TUInt  (Maybe a)
-                | TInt   (Maybe a)
-                | TAngle (Maybe a)
-                | TFloat (Maybe a)
-                | TCmplx (Maybe a) -- Corresponds to openQASM 3 type cmplx[float[expr]]
-                -- Non-syntactic types
-                | TUnit
-                | TGate { numCargs :: Int, numQargs :: Int }
-                | TProc { argTypes :: [OpenType a], returnType :: Maybe (OpenType a) }
-                deriving (Show, Eq)
+data TypeExpr' a = TCReg  a 
+                 | TQBit          
+                 | TQReg  a
+                 -- Classical types
+                 | TBool
+                 | TUInt  (Maybe a)
+                 | TInt   (Maybe a)
+                 | TAngle (Maybe a)
+                 | TFloat (Maybe a)
+                 | TCmplx (Maybe a) -- Corresponds to openQASM 3 type cmplx[float[expr]]
+                 -- Non-syntactic types
+                 | TUnit
+                 | TRange (TypeExpr' a) 
+                 | TGate { numCargs :: Int, numQargs :: Int }
+                 | TProc { argTypes :: [TypeExpr' a], returnType :: Maybe (TypeExpr' a) }
+                 deriving (Show, Eq)
 
-type Type a       = OpenType (Expr a)
-type ResolvedType = OpenType Int
+type TypeExpr a = TypeExpr' (Expr a)
+type Type       = TypeExpr' Int
+
+-- | Promotes a type to a type expression, given a value for the annotation
+asTypeExpr :: a -> Type -> TypeExpr a
+asTypeExpr a typ = case typ of
+  TCReg i        -> TCReg (EInt a i)
+  TQBit          -> TQBit
+  TQReg i        -> TQReg (EInt a i)
+  TUInt i        -> TUInt (fmap (EInt a) i)
+  TInt  i        -> TInt (fmap (EInt a) i)
+  TAngle i       -> TAngle (fmap (EInt a) i)
+  TFloat i       -> TFloat (fmap (EInt a) i)
+  TCmplx i       -> TCmplx (fmap (EInt a) i)
+  TGate nc nq    -> TGate nc nq
+  TProc args ret -> TProc (map (asTypeExpr a) args) (fmap (asTypeExpr a) ret)
 
 -- | Access paths. Either a variable or an index into a register/bit array
 data AccessPath a = AVar a ID
@@ -104,6 +119,11 @@ data AccessPath a = AVar a ID
 instance Annotated AccessPath where
   getAnnotation (AVar a _) = a
   getAnnotation (AIndex a _ _) = a
+
+-- | Promotes an access path to an equivalent expression
+exprFromAP :: AccessPath a -> Expr a
+exprFromAP (AVar a var) = EVar a var
+exprFromAP (AIndex a var expr) = EIndex a (EVar a var) expr
 
 -- | Gate modifiers
 data Modifier a = MCtrl a Bool (Maybe (Expr a))
@@ -132,7 +152,7 @@ data Expr a = EVar a ID
             | EUOp a UOp (Expr a)
             | EBOp a (Expr a) BinOp (Expr a)
             | EStmt a (Stmt a)
-            | ECast a (Type a) (Expr a)
+            | ECast a (TypeExpr a) (Expr a)
             deriving (Show)
 
 instance Annotated Expr where
@@ -156,10 +176,10 @@ instance Annotated Expr where
 
 -- | Declarations
 data Decl a =
-    DVar { vid :: ID, typ :: Type a, val :: Maybe (Expr a) }
-  | DDef { did :: ID, dparams :: [(ID, Type a)], dreturns :: Maybe (Type a), dbody :: Stmt a }
-  | DGate { gid :: ID, gparams :: [(ID, Type a)], gqargs :: [ID], gbody :: Stmt a }
-  | DExtern { eid :: ID, eparams :: [(Type a)], ereturns :: Maybe (Type a) }
+    DVar { vid :: ID, typ :: TypeExpr a, val :: Maybe (Expr a) }
+  | DDef { did :: ID, dparams :: [(ID, TypeExpr a)], dreturns :: Maybe (TypeExpr a), dbody :: Stmt a }
+  | DGate { gid :: ID, gparams :: [(ID, TypeExpr a)], gqargs :: [ID], gbody :: Stmt a }
+  | DExtern { eid :: ID, eparams :: [(TypeExpr a)], ereturns :: Maybe (TypeExpr a) }
   | DAlias { aid :: ID, aexps :: [(Expr a)] }
   deriving (Show)
 
@@ -171,8 +191,8 @@ data Stmt a =
   | SBlock a [Stmt a]
   | SExpr a (Expr a)
   | SGateCall a [Modifier a] ID [Expr a] [AccessPath a]
-  | SAssign a (AccessPath a) (Maybe BinOp) (Expr a)
-  | SFor a (ID, Type a) (Expr a) (Stmt a)
+  | SAssign a (AccessPath a) (Expr a)
+  | SFor a (ID, TypeExpr a) (Expr a) (Stmt a)
   | SBreak a
   | SContinue a
   | SEnd a
@@ -216,7 +236,7 @@ translateProg node = case node of
   _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Type translations
-translateType :: S.ParseNode -> Either ErrMsg (Type Location)
+translateType :: S.ParseNode -> Either ErrMsg (TypeExpr Location)
 translateType node = case node of
   S.Node S.BitTypeSpec [S.NilNode] c -> return $ TBool
   S.Node S.BitTypeSpec [exprnode] c -> translateExpr exprnode >>= return . TCReg
@@ -391,7 +411,7 @@ translateAnnotation node = case node of
   _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
 
 -- | Translation of Arguments
-translateArg :: S.ParseNode -> Either ErrMsg (ID, Type Location)
+translateArg :: S.ParseNode -> Either ErrMsg (ID, TypeExpr Location)
 translateArg node = case node of
   S.Node S.ArgumentDefinition [typespec, idnode] c -> do
     typ <- translateType typespec
@@ -426,7 +446,9 @@ translateStmt node = case node of
     idexpr <- translateAccessPath idnode
     expr <- translateExpr exprnode
     assop <- translateCompoundAOp op
-    return $ SAssign c idexpr assop expr
+    case assop of
+      Nothing  -> return $ SAssign c idexpr expr
+      Just bop -> return $ SAssign c idexpr (EBOp c (exprFromAP idexpr) bop expr)
 
   S.Node (S.BarrierStmt) idnodes c -> do
     idexprs <- mapM translateAccessPath idnodes
@@ -527,7 +549,7 @@ translateStmt node = case node of
   S.Node S.MeasureArrowAssignmentStmt [srcidexpr, tgtidexpr] c -> do
     srcid <- translateAccessPath srcidexpr
     tgtid <- translateExpr tgtidexpr
-    return $ SAssign c srcid Nothing (EMeasure c tgtid)
+    return $ SAssign c srcid (EMeasure c tgtid)
 
   S.Node S.CregOldStyleDeclStmt [idnode, exprnode] c -> do
     id <- translateIdent idnode
