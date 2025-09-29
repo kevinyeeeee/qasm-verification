@@ -14,7 +14,8 @@ import Control.Monad.State
 
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Maybe (fromJust)
+import Data.Maybe (isJust, fromJust, fromMaybe)
+import Data.Bits
 
 import Feynman.Core (ID)
 import qualified Feynman.Frontend.OpenQASM3.Syntax as S
@@ -24,7 +25,7 @@ import Feynman.Frontend.OpenQASM3.Core
 
 -- | Type elaborate with compile-time constant declarations
 data ElaboratedType = EType { ty :: Type,
-                              const :: Bool
+                              isConstant :: Bool
                             } deriving (Show)
 
 -- | Insert a type into an elaborated type
@@ -99,16 +100,6 @@ assign var typ = do
 
 {- Indexing behaviour -}
 
--- | Checks whether a type can be indexed
-isIndexable :: Type -> Bool
-isIndexable typ = case typ of
-  TCReg _  -> True
-  TQReg _  -> True
-  TInt _   -> True
-  TUInt _  -> True
-  TAngle _ -> True
-  _        -> False
-
 -- | Returns the type of an indexed value of an indexable type
 dereference :: Type -> Type
 dereference typ = case typ of
@@ -170,6 +161,8 @@ castable from to = case from of
   TQReg _ -> case to of
     TQReg _ -> True
     _       -> False
+  TRange t -> case to of
+    TRange t' -> castable t t'
   _ -> False
 
 -- | Unification of types in expressions
@@ -226,6 +219,57 @@ unifyWidth Nothing  _        = Nothing
 unifyWidth _        Nothing  = Nothing
 unifyWidth (Just i) (Just j) = Just (max i j)
 
+-- | Unary operator type lookup
+tcUOp :: UOp -> Type -> Maybe Type
+tcUOp uop typ = case uop of
+  SinOp      | castable typ (TAngle Nothing) -> Just (TAngle Nothing)
+  SinOp      | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
+  CosOp      | castable typ (TAngle Nothing) -> Just (TAngle Nothing)
+  CosOp      | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
+  TanOp      | castable typ (TAngle Nothing) -> Just (TAngle Nothing)
+  TanOp      | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
+  ArcsinOp   | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
+  ArccosOp   | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
+  ArctanOp   | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
+  CeilOp     | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
+  FloorOp    | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
+  ExpOp      | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
+  ExpOp      | castable typ (TCmplx Nothing) -> Just (TCmplx Nothing)
+  LnOp       | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
+  SqrtOp     | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
+  SqrtOp     | castable typ (TCmplx Nothing) -> Just (TCmplx Nothing)
+  RealOp     | castable typ (TCmplx Nothing) -> Just (TFloat Nothing)
+  ImOp       | castable typ (TCmplx Nothing) -> Just (TFloat Nothing)
+  NegOp      | isBitvec typ                 -> Just typ
+  UMinusOp   | isNumeric typ                -> Just typ
+  PopcountOp | castable typ (TUInt Nothing) -> Just (TUInt Nothing)
+  _                                             -> Nothing
+
+-- | Binary operator type lookup
+tcBOp :: Type -> BinOp -> Type -> Maybe Type
+tcBOp typ bop typ' = case bop of
+  AndOp    | isBitvec typ && isBitvec typ' -> typ''
+  OrOp     | isBitvec typ && isBitvec typ' -> typ''
+  XorOp    | isBitvec typ && isBitvec typ' -> typ''
+  LShiftOp | isBitvec typ && castable typ' (TUInt Nothing) -> Just typ
+  RShiftOp | isBitvec typ && castable typ' (TUInt Nothing) -> Just typ
+  LRotOp   | isBitvec typ && castable typ' (TUInt Nothing) -> Just typ
+  RRotOp   | isBitvec typ && castable typ' (TUInt Nothing) -> Just typ
+  EqOp     | isJust typ'' && isComparable (fromJust typ'') -> typ''
+  LTOp     | isJust typ'' && isComparable (fromJust typ'') -> typ''
+  LEqOp    | isJust typ'' && isComparable (fromJust typ'') -> typ''
+  GTOp     | isJust typ'' && isComparable (fromJust typ'') -> typ''
+  GEqOp    | isJust typ'' && isComparable (fromJust typ'') -> typ''
+  PlusOp   | isNumeric typ && isNumeric typ' -> typ''
+  MinusOp  | isNumeric typ && isNumeric typ' -> typ''
+  TimesOp  | isNumeric typ && isNumeric typ' -> typ''
+  DivOp    | isNumeric typ && isNumeric typ' -> typ''
+  ModOp    | isNumeric typ && isNumeric typ' -> typ''
+  PowOp    | isNumeric typ && isNumeric typ' -> typ''
+  ConcatOp | isIndexable typ && isIndexable typ' -> typ''
+  _ -> Nothing
+  where typ'' = unify typ typ'
+
 {- Semantic analysis & type checking -}
 
 -- | Program type checking
@@ -235,11 +279,11 @@ tcProg (Prog ver xs) = liftM (Prog ver) $ mapM tcStmt xs
 -- | Declaration type checking
 tcDecl :: Decl Location -> TC (Decl ElaboratedType)
 tcDecl decl = case decl of
-  DVar var typ val isConst -> do
+  DVar var typ val isConstant -> do
     typ <- resolveType typ
     val <- mapM (flip tcExprAs typ) val
-    assign var (EType typ isConst)
-    return $ DVar var (asTypeExpr' typ) val isConst
+    assign var (EType typ isConstant)
+    return $ DVar var (asTypeExpr' typ) val isConstant
 
   DDef var params ret body -> do
     let (ids,types) = unzip params
@@ -319,8 +363,8 @@ tcStmt stmt = case stmt of
 
   SAssign loc ap expr -> do
     ap <- tcAccessPath ap
-    let (EType ty const) = getAnnotation ap
-    when const $
+    let (EType ty isConstant) = getAnnotation ap
+    when isConstant $
       logMsg $ "Error at (" ++ show loc ++ "): Modifying constant lvalue " ++ show ap
     expr <- tcExprAs expr (typeof ap)
     return $ SAssign unitTy ap expr
@@ -376,12 +420,134 @@ broadcast _ = error "Unimplemented"
 
 -- | Expression type checking
 tcExpr :: Expr Location -> TC (Expr ElaboratedType)
-tcExpr _ = error "Unimplemented"
+tcExpr expr = case expr of
+  EVar loc var -> do
+    bind <- getBinding var
+    case bind of
+      Nothing -> do
+        logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ var
+        return $ EVar (pureType TUnit) var
+      Just typ -> return $ EVar typ var
+
+  EIndex loc expr idx -> do
+    expr <- tcExpr expr
+    idx <- tcExpr idx
+    let annot = getAnnotation expr
+    case (isIndexable (ty annot), typeof idx) of
+      (False, _) -> do
+        logMsg $ "Type error at (" ++ show loc ++ "): expected indexable type"
+        return $ EIndex annot expr idx
+      (True, TRange idxTyp) | castable idxTyp (TUInt Nothing) ->
+        return $ EIndex annot expr idx
+      (True, idxTyp) | castable idxTyp (TUInt Nothing) ->
+        return $ EIndex (annot { ty = dereference (ty annot) }) expr idx
+      _ -> do
+        logMsg $ "Type error at (" ++ show loc ++ "): invalid index type"
+        return $ EIndex annot expr idx
+
+  ECall loc var args -> do
+    bind <- getBinding var
+    case bind of
+      Nothing ->  do
+        logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ var
+        args <- mapM tcExpr args
+        return $ ECall (pureType TUnit) var args
+      Just (EType (TProc params ret) _) -> do
+        args <- mapM (uncurry tcExprAs) (zip args params)
+        return $ ECall (pureType $ fromMaybe TUnit ret) var args 
+      Just _ -> do
+        logMsg $ "Type error at (" ++ show loc ++"): procedure type expected"
+        args <- mapM tcExpr args
+        return $ ECall (pureType TUnit) var args
+
+  EMeasure loc expr -> do
+    expr <- tcExpr expr
+    case typeof expr of
+      TQBit   -> return $ EMeasure (pureType TBool) expr
+      TQReg i -> return $ EMeasure (pureType $ TCReg i) expr
+      _       -> do
+        logMsg $ "Type error at (" ++ show loc ++ "): measure of non-qubit or qreg argument"
+        return $ EMeasure (pureType TBool) expr
+
+  EInt loc i   -> return $ EInt (EType (TInt Nothing) True) i
+  EFloat loc r -> return $ EFloat (EType (TFloat Nothing) True) r
+  ECmplx loc c -> return $ ECmplx (EType (TCmplx Nothing) True) c
+
+  ESlice loc init step end -> do
+    init <- tcExprAs init (TInt Nothing)
+    step <- mapM (flip tcExprAs $ TInt Nothing) step
+    end  <- tcExprAs end (TInt Nothing)
+    return $ ESlice (pureType $ TRange (TUInt Nothing)) init step end
+    
+  ESet loc exprs -> do
+    exprs <- mapM (flip tcExprAs $ TUInt Nothing) exprs
+    return $ ESet (pureType $ TRange (TUInt Nothing)) exprs
+
+  EPi loc -> return $ EPi (EType (TFloat Nothing) True)
+  EIm loc -> return $ EIm (EType (TCmplx Nothing) True)
+  EBool loc b -> return $ EBool (EType TBool True) b
+
+  EUOp loc uop expr -> do
+    expr <- tcExpr expr
+    let annot = getAnnotation expr
+    case tcUOp uop (ty annot) of
+      Nothing -> do
+        logMsg $ "Type error at (" ++ show loc ++ "): invalid operand type"
+        return $ EUOp annot uop expr
+      Just rTyp -> return $ EUOp (annot { ty = rTyp }) uop expr
+
+  EBOp loc expr bop expr' -> do
+    expr <- tcExpr expr
+    expr' <- tcExpr expr'
+    case tcBOp (typeof expr) bop (typeof expr') of
+      Nothing -> do
+        logMsg $ "Type error at (" ++ show loc ++ "): invalid operand types"
+        return $ EBOp (getAnnotation expr) expr bop expr'
+      Just rTyp ->
+        let isConstTy = isConstant . getAnnotation in
+          return $ EBOp (EType rTyp (isConstTy expr && isConstTy expr')) expr bop expr'
+
+  EStmt loc stmt -> do
+    stmt <- tcStmt stmt
+    return $ EStmt (pureType TUnit) stmt
+
+  ECast loc typexpr expr -> do
+    typ <- resolveType typexpr
+    expr <- tcExpr expr
+    when (not $ castable (typeof expr) typ) $
+      logMsg $ "Type error at (" ++ show loc  ++ "): invalid cast"
+    return $ ECast ((getAnnotation expr){ ty = typ }) (asTypeExpr' typ) expr
+        
 
 -- | Evaluates a suitably typed expression as a UInt
 evalUInt :: Expr ElaboratedType -> TC Int
-evalUInt _ = error "Unimplemented"
-
+evalUInt expr = case expr of
+  EInt _ i -> return i
+  EUOp _ uop expr -> liftM (evalUOp uop) $ evalUInt expr
+  EBOp _ expr bop expr' ->
+    pure (\a b -> evalBOp a bop b) <*> (evalUInt expr) <*> (evalUInt expr')
+  ECast _ _ expr -> evalUInt expr
+  _ -> error "Unimplemented"
+  where evalUOp uop i = case uop of
+          UMinusOp -> (-i)
+          NegOp -> complement i
+          PopcountOp -> popCount i
+        evalBOp i bop j = case bop of
+          AndOp -> i .&. j
+          OrOp -> i .|. j
+          XorOp -> i `xor` j
+          LShiftOp -> i `shiftL` j
+          RShiftOp -> i `shiftR` j
+          LRotOp -> i `rotateL` j
+          RRotOp -> i `rotateR` j
+          PlusOp -> i + j
+          MinusOp -> i - j
+          TimesOp -> i * j
+          DivOp -> i `div` j
+          ModOp -> i `mod` j
+          PowOp -> i^j
+          
+  
 -- | Type checks an expression as a particular type, inserting
 --   a cast as needed
 tcExprAs :: Expr Location -> Type -> TC (Expr ElaboratedType)

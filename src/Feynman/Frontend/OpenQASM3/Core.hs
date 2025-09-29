@@ -89,7 +89,7 @@ data TypeExpr' a = TCReg  a
                  | TCmplx (Maybe a) -- Corresponds to openQASM 3 type cmplx[float[expr]]
                  -- Non-syntactic types
                  | TUnit
-                 | TRange (TypeExpr' a) 
+                 | TRange (TypeExpr' a)
                  | TGate { numCargs :: Int, numQargs :: Int }
                  | TProc { argTypes :: [TypeExpr' a], returnType :: Maybe (TypeExpr' a) }
                  deriving (Show, Eq)
@@ -103,13 +103,57 @@ asTypeExpr a typ = case typ of
   TCReg i        -> TCReg (EInt a i)
   TQBit          -> TQBit
   TQReg i        -> TQReg (EInt a i)
+  TBool          -> TBool
   TUInt i        -> TUInt (fmap (EInt a) i)
   TInt  i        -> TInt (fmap (EInt a) i)
   TAngle i       -> TAngle (fmap (EInt a) i)
   TFloat i       -> TFloat (fmap (EInt a) i)
   TCmplx i       -> TCmplx (fmap (EInt a) i)
+  TUnit          -> TUnit
+  TRange t       -> TRange $ asTypeExpr a t
   TGate nc nq    -> TGate nc nq
   TProc args ret -> TProc (map (asTypeExpr a) args) (fmap (asTypeExpr a) ret)
+
+-- | Classifies types as numeric
+isNumeric :: TypeExpr' a -> Bool
+isNumeric typeexpr = case typeexpr of
+  TUInt  _ -> True
+  TInt   _ -> True
+  TFloat _ -> True
+  TAngle _ -> True
+  TCmplx _ -> True
+  _        -> False
+
+-- | Classifies types as bit-like
+isBitvec :: TypeExpr' a -> Bool
+isBitvec typeexpr = case typeexpr of
+  TCReg i         -> True
+  TBool           -> True
+  TUInt  (Just i) -> True
+  TInt   (Just i) -> True
+  TAngle (Just i) -> True
+  _               -> False
+
+-- | Classifies types as comparable
+isComparable :: TypeExpr' a -> Bool
+isComparable typeexpr = case typeexpr of
+  TCReg i  -> True
+  TBool    -> True
+  TUInt  _ -> True
+  TInt   _ -> True
+  TFloat _ -> True
+  TAngle _ -> True
+  _        -> False
+
+-- | Classifies types as indexable
+isIndexable :: Type -> Bool
+isIndexable typ = case typ of
+  TCReg _  -> True
+  TQReg _  -> True
+  TInt _   -> True
+  TUInt _  -> True
+  TAngle _ -> True
+  _        -> False
 
 -- | Access paths. Either a variable or an index into a register/bit array
 data AccessPath a = AVar a ID
