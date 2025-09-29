@@ -176,7 +176,7 @@ instance Annotated Expr where
 
 -- | Declarations
 data Decl a =
-    DVar { vid :: ID, typ :: TypeExpr a, val :: Maybe (Expr a) }
+    DVar { vid :: ID, typ :: TypeExpr a, val :: Maybe (Expr a), isConst :: Bool }
   | DDef { did :: ID, dparams :: [(ID, TypeExpr a)], dreturns :: Maybe (TypeExpr a), dbody :: Stmt a }
   | DGate { gid :: ID, gparams :: [(ID, TypeExpr a)], gqargs :: [ID], gbody :: Stmt a }
   | DExtern { eid :: ID, eparams :: [(TypeExpr a)], ereturns :: Maybe (TypeExpr a) }
@@ -212,7 +212,7 @@ data Prog a = Prog Version [Stmt a] deriving (Show)
 -- | Gets the identifier being declared
 declID :: Decl a -> ID
 declID decl = case decl of
-  (DVar id _ _) -> id
+  (DVar id _ _ _) -> id
   (DDef id _ _ _) -> id
   (DExtern id _ _) -> id
   (DAlias id _) -> id
@@ -467,13 +467,13 @@ translateStmt node = case node of
     expr <- case initexpr of
       S.NilNode -> return Nothing
       node -> liftM Just $ translateExpr node
-    return $ SDeclare c (DVar id ty expr)
+    return $ SDeclare c (DVar id ty expr False)
 
   S.Node S.ConstDeclStmt [typespec, idnode, initexpr] c -> do
     ty <- translateType typespec
     id <- translateIdent idnode
     expr <- translateExpr initexpr
-    return $ SDeclare c (DVar id ty (Just expr))
+    return $ SDeclare c (DVar id ty (Just expr) True)
 
   S.Node S.ContinueStmt [] c   -> return $ SContinue c
 
@@ -539,12 +539,12 @@ translateStmt node = case node of
   S.Node S.InputIoDeclStmt [typenode, idnode] c -> do
     ty <- translateType typenode
     id <- translateIdent idnode
-    return $ SDeclare c (DVar id ty Nothing)
+    return $ SDeclare c (DVar id ty Nothing False)
 
   S.Node S.OutputIoDeclStmt [typenode, idnode] c -> do
     ty <- translateType typenode
     id <- translateIdent idnode
-    return $ SDeclare c (DVar id ty Nothing)
+    return $ SDeclare c (DVar id ty Nothing False)
 
   S.Node S.MeasureArrowAssignmentStmt [srcidexpr, tgtidexpr] c -> do
     srcid <- translateAccessPath srcidexpr
@@ -554,23 +554,23 @@ translateStmt node = case node of
   S.Node S.CregOldStyleDeclStmt [idnode, exprnode] c -> do
     id <- translateIdent idnode
     case exprnode of
-      S.NilNode -> return $ SDeclare c (DVar id TBool Nothing)
+      S.NilNode -> return $ SDeclare c (DVar id TBool Nothing False)
       node      -> do
         expr <- translateExpr node
-        return $ SDeclare c (DVar id (TCReg expr) Nothing)
+        return $ SDeclare c (DVar id (TCReg expr) Nothing False)
 
   S.Node S.QregOldStyleDeclStmt [idnode, exprnode] c -> do
     id <- translateIdent idnode
     case exprnode of
-      S.NilNode -> return $ SDeclare c (DVar id TQBit Nothing)
+      S.NilNode -> return $ SDeclare c (DVar id TQBit Nothing False)
       node -> do
         expr <- translateExpr node
-        return $ SDeclare c (DVar id (TQReg expr) Nothing)
+        return $ SDeclare c (DVar id (TQReg expr) Nothing False)
 
   S.Node S.QuantumDeclStmt [typenode, idnode] c -> do
     id <- translateIdent idnode
     typ <- translateType typenode
-    return $ SDeclare c (DVar id typ Nothing)
+    return $ SDeclare c (DVar id typ Nothing False)
 
   S.Node (S.ResetStmt) [exprnode] c -> do
     expr <- translateExpr exprnode

@@ -39,6 +39,10 @@ constType ty = EType ty True
 typeof :: Annotated f => f ElaboratedType -> Type
 typeof = ty . getAnnotation
 
+-- | Instance for asTypeExpr specialized to type checking
+asTypeExpr' :: Type -> TypeExpr ElaboratedType
+asTypeExpr' = asTypeExpr (pureType $ TUInt Nothing)
+
 -- | Type checking environment, consisting of bindings to
 --   elaborate types and a list of error messages
 data Env = Env { constants :: Map ID ElaboratedType,
@@ -64,6 +68,17 @@ pushScope = modify (\env -> env { scopes = Map.empty:(scopes env) })
 -- | Pops the local scope off the stack
 popScope :: TC ()
 popScope = modify (\env -> env { scopes = Map.empty:(scopes env) })
+
+-- | Opens a new procedure scope which contains exactly the global constants
+openProcScope :: [(ID, Type)] -> TC [Map ID ElaboratedType]
+openProcScope lVars = do
+  lScopes <- gets scopes
+  modify (\env -> env { scopes = [Map.fromList $ map (fmap pureType) lVars] })
+  return lScopes
+
+-- | Closes a procedure scope, restoring the old scopes
+closeProcScope :: [Map ID ElaboratedType] -> TC ()
+closeProcScope lScopes = modify (\env -> env { scopes = lScopes })
 
 -- | Looks up an identifier, beginning with the inner-most scope
 getBinding :: ID -> TC (Maybe ElaboratedType)
@@ -219,7 +234,53 @@ tcProg (Prog ver xs) = liftM (Prog ver) $ mapM tcStmt xs
 
 -- | Declaration type checking
 tcDecl :: Decl Location -> TC (Decl ElaboratedType)
-tcDecl _ = error "Unimplemented"
+tcDecl decl = case decl of
+  DVar var typ val isConst -> do
+    typ <- resolveType typ
+    val <- mapM (flip tcExprAs typ) val
+    assign var (EType typ isConst)
+    return $ DVar var (asTypeExpr' typ) val isConst
+
+  DDef var params ret body -> do
+    let (ids,types) = unzip params
+    paramTypes <- mapM resolveType types
+    let params = zip ids paramTypes
+    ret <- mapM resolveType ret
+    let fTyp = TProc paramTypes ret
+    scopes <- openProcScope $ (var,fTyp):params
+    body <- tcStmt body
+    closeProcScope scopes
+    assign var (EType fTyp True)
+    return  $ DDef var (map (fmap asTypeExpr') params) (fmap asTypeExpr' ret) body
+
+  DGate var cparams qparams body -> do
+    let (ids,types) = unzip cparams
+    paramTypes <- mapM resolveType types
+    let cparams = zip ids paramTypes
+    let fTyp = TGate (length cparams) (length qparams)
+    scopes <- openProcScope $ [(var,fTyp)] ++ cparams ++ (zip qparams $ repeat TQBit)
+    body <- tcStmt body
+    closeProcScope scopes
+    assign var (EType fTyp True)
+    return  $ DGate var (map (fmap asTypeExpr') cparams) qparams body
+
+  DExtern var params ret -> do
+    params <- mapM resolveType params
+    ret    <- mapM resolveType ret
+    assign var (EType (TProc params ret) True)
+    return $ DExtern var (map asTypeExpr' params) (fmap asTypeExpr' ret)
+
+  DAlias var exprs -> do
+    let isQReg typ = case typ of
+          TQReg _ -> True
+          _       -> False
+    exprs <- mapM tcExpr exprs
+    case map typeof exprs of
+      [TQBit] -> assign var (pureType TQBit)
+      xs | all isQReg xs -> assign var (pureType $ TQReg (foldr (\(TQReg i) -> (+i)) 0 xs))
+      _ -> logMsg "Type error: aliased values should be qbit or qreg type"
+    return $ DAlias var exprs
+    
 
 -- | Statement type checking. Expands some statements
 --   to lists of statements
@@ -258,6 +319,9 @@ tcStmt stmt = case stmt of
 
   SAssign loc ap expr -> do
     ap <- tcAccessPath ap
+    let (EType ty const) = getAnnotation ap
+    when const $
+      logMsg $ "Error at (" ++ show loc ++ "): Modifying constant lvalue " ++ show ap
     expr <- tcExprAs expr (typeof ap)
     return $ SAssign unitTy ap expr
 
@@ -268,7 +332,7 @@ tcStmt stmt = case stmt of
     assign var (EType typ False)
     stmt <- tcStmt stmt
     popScope
-    return $ SFor unitTy (var, asTypeExpr (pureType $ TInt Nothing) typ) expr stmt
+    return $ SFor unitTy (var, asTypeExpr' typ) expr stmt
 
   SBreak loc    -> return $ SBreak unitTy
   SContinue loc -> return $ SContinue unitTy
@@ -281,9 +345,14 @@ tcStmt stmt = case stmt of
     return $ SIf unitTy expr stmt stmt'
 
   SReset loc expr -> do
-    expr <- tcExprAs expr TQBit
-    return $ SReset unitTy expr
-    
+    expr <- tcExpr expr
+    case typeof expr of
+      TQBit   -> return $ SReset unitTy expr
+      TQReg _ -> return $ SReset unitTy expr
+      _       -> do
+        logMsg $ "Type error at (" ++ show loc ++ "): reset of non-qubit or qreg argument"
+        return $ SReset unitTy expr
+
   SReturn loc mexpr -> do
     mexpr <- mapM tcExpr mexpr
     return $ SReturn unitTy mexpr
@@ -326,8 +395,7 @@ tcExprAs expr typ = do
       logMsg $ "Type error at (" ++ show (getAnnotation expr) ++ "): " ++
                "Expected type " ++ show typ ++ ", got " ++ show (ty exprType)
       return $ expr
-    True -> let tyInt = pureType $ TInt Nothing in
-      return $ ECast (exprType { ty = typ }) (asTypeExpr tyInt typ) expr
+    True -> return $ ECast (exprType { ty = typ }) (asTypeExpr' typ) expr
 
 -- | Expression type checking
 tcModifier :: Modifier Location -> TC (Modifier ElaboratedType)
