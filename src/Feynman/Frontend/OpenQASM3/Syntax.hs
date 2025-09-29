@@ -48,11 +48,14 @@ import Text.Read (readMaybe)
 data SourceRef where
   NilRef :: SourceRef
   TextRef :: {sourceModule :: String, sourceLine :: Int, sourceColumn :: Maybe Int} -> SourceRef
-  deriving (Eq, Read, Show)
+  deriving (Eq, Read)
 
 pp_source :: SourceRef -> String
 pp_source NilRef = "unknown"
 pp_source (TextRef mod line col) = "line " ++ show line ++ ", col " ++ show col ++ " (" ++ show mod ++ ")"
+
+instance Show SourceRef where
+  show = pp_source
 
 data Node t c where
   NilNode :: Node t c

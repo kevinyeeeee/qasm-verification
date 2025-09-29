@@ -58,6 +58,10 @@ type TC = State Env
 emptyEnv :: Env
 emptyEnv = Env Map.empty [Map.empty] []
 
+-- | Environment pre-populated with built in gates
+initEnv :: Env
+initEnv = Env (fmap constType $ Map.fromList stdTypes) [Map.empty] []
+
 -- | Logs an error message
 logMsg :: String -> TC ()
 logMsg msg = modify (\env -> env { errs = errs env ++ [Err msg] })
@@ -98,6 +102,37 @@ assign var typ = do
       logMsg $ "Error: Declaration of " ++ var ++ " shadows existing definition"
       return ()
 
+-- | Types of the standard library gates
+stdTypes :: [(ID, Type)]
+stdTypes = [
+  ("gphase", TGate 1 0),
+  ("u", TGate 3 1),
+  ("p", TGate 1 1),
+  ("x", TGate 0 1),
+  ("y", TGate 0 1),
+  ("z", TGate 0 1),
+  ("h", TGate 0 1),
+  ("s", TGate 0 1),
+  ("sdg", TGate 0 1),
+  ("t", TGate 0 1),
+  ("tdg", TGate 0 1),
+  ("sx", TGate 0 1),
+  ("rx", TGate 1 1),
+  ("ry", TGate 1 1),
+  ("rz", TGate 1 1),
+  ("cx", TGate 0 2),
+  ("cy", TGate 0 2),
+  ("cz", TGate 0 2),
+  ("cp", TGate 1 2),
+  ("crx", TGate 1 2),
+  ("cry", TGate 1 2),
+  ("crz", TGate 1 2),
+  ("ch", TGate 0 2),
+  ("cu", TGate 4 2),
+  ("swap", TGate 0 2),
+  ("ccx", TGate 0 3),
+  ("cswap", TGate 0 3)]
+   
 {- Indexing behaviour -}
 
 -- | Returns the type of an indexed value of an indexable type
@@ -256,6 +291,7 @@ tcBOp typ bop typ' = case bop of
   LRotOp   | isBitvec typ && castable typ' (TUInt Nothing) -> Just typ
   RRotOp   | isBitvec typ && castable typ' (TUInt Nothing) -> Just typ
   EqOp     | isJust typ'' && isComparable (fromJust typ'') -> typ''
+  NEqOp    | isJust typ'' && isComparable (fromJust typ'') -> typ''
   LTOp     | isJust typ'' && isComparable (fromJust typ'') -> typ''
   LEqOp    | isJust typ'' && isComparable (fromJust typ'') -> typ''
   GTOp     | isJust typ'' && isComparable (fromJust typ'') -> typ''
@@ -416,7 +452,20 @@ tcStmt stmt = case stmt of
     
 -- | Broadcasting gate arguments
 broadcast :: [AccessPath ElaboratedType] -> TC [[AccessPath ElaboratedType]]
-broadcast _ = error "Unimplemented"
+broadcast xs = case foldM go (-1) xs of
+  Nothing   -> return [[]]
+  Just (-1) -> return [xs]
+  Just i    -> return [map (deref j) xs | j <- [0..i-1]]
+  where
+    go i ap = case (i, getAnnotation ap) of
+      (i, EType TQBit _)      -> Just i
+      (-1, EType (TQReg j) _) -> Just j
+      (i, EType (TQReg j) _)  -> if i == j then Just i else Nothing
+
+    deref i ap = case ap of
+      AVar (EType (TQReg _) c) var -> AIndex (EType TQBit c) var (EInt (pureType $ TUInt Nothing) i)
+      _                            -> ap
+      
 
 -- | Expression type checking
 tcExpr :: Expr Location -> TC (Expr ElaboratedType)
@@ -628,3 +677,15 @@ resolveType typ = case typ of
         logMsg $ "Error: type parameterized by non-constant expression"
         return $ 0
       EType typ True | castable typ (TUInt Nothing) -> evalUInt expr
+
+{- Top-level type checking -}
+
+-- | Type checks a program and converts the result into an alternative
+tcQasm :: Prog Location -> Either [ErrMsg] (Prog ElaboratedType)
+tcQasm prog = case runState (tcProg prog) initEnv of
+  (prog, Env _ _ []) -> Right prog
+  (_, Env _ _ xs)    -> Left xs
+
+-- | Prints out the list of error messages
+printErrors :: [ErrMsg] -> IO ()
+printErrors = mapM_ (\a -> print a >> putStrLn "")

@@ -60,6 +60,7 @@ data BinOp = AndOp -- &, &&
            | LRotOp  -- rotl
            | RRotOp -- rotr
            | EqOp -- ==
+           | NEqOp -- !=
            | LTOp -- <
            | LEqOp -- <=
            | GTOp -- >
@@ -277,7 +278,7 @@ qasmToCore = translateProg
 translateProg :: S.ParseNode -> Either ErrMsg (Prog Location)
 translateProg node = case node of
   S.Node (S.Program i j _) xs _ -> mapM translateStmt xs >>= return . Prog (i,j)
-  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
+  _  -> Left (Err $ "Fatal: malformed program node (" ++ show node ++ ")")
 
 -- | Type translations
 translateType :: S.ParseNode -> Either ErrMsg (TypeExpr Location)
@@ -323,19 +324,21 @@ translateType node = case node of
   S.Node S.MutableArrayRefTypeSpec _ c ->
     Left (Err "Array types unsupported")
 
-  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
+  _  -> Left (Err $ "Fatal: malformed type node (" ++ show node ++ ")")
 
 -- | Identifier translations
 translateIdent :: S.ParseNode -> Either ErrMsg ID
 translateIdent node = case node of
   S.Node (S.Identifier id _) [] c -> return id
 
-  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
+  _  -> Left (Err $ "Fatal: malformed identifier node (" ++ show node ++ ")")
 
 -- | Access path translations
 translateAccessPath :: S.ParseNode -> Either ErrMsg (AccessPath Location)
 translateAccessPath node = case node of
   S.Node (S.HardwareQubit idx _) [] c -> return $ AVar c ("$" ++ show idx)
+
+  S.Node (S.Identifier id _) [] c -> return $ AVar c id
 
   S.Node S.IndexedIdentifier [idnode, idxlist] c -> do
     id   <- translateIdent idnode
@@ -344,7 +347,7 @@ translateAccessPath node = case node of
       [idx] -> return $ AIndex c id idx
       _     -> Left (Err "Array types unsupported")
 
-  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
+  _  -> Left (Err $ "Fatal: malformed access path node (" ++ show node ++ ")")
 
 -- | Translation of Expressions
 translateExpr :: S.ParseNode -> Either ErrMsg (Expr Location)
@@ -422,7 +425,12 @@ translateExpr node = case node of
       [idx] -> return $ EIndex c (EVar c id) idx
       _     -> Left (Err "Array types unsupported")
 
-  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
+  S.Node S.CastExpr [typenode, exprnode] c -> do
+    typ  <- translateType typenode
+    expr <- translateExpr exprnode
+    return $ ECast c typ expr
+
+  _  -> Left (Err $ "Fatal: malformed expression node (" ++ show node ++ ")")
 
   where intOfBitstring xs =
           foldr (+) 0 . map (\(b,i) -> if b then shift 1 i else 0) $ zip xs [0..]
@@ -446,13 +454,13 @@ translateModifier node = case node of
     expr <- translateExpr exprnode
     return $ MCtrl c True (Just expr)
 
-  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
+  _  -> Left (Err $ "Fatal: malformed modifier node (" ++ show node ++ ")")
 
 -- | Translation of Annotations
 translateAnnotation :: S.ParseNode -> Either ErrMsg Annotation
 translateAnnotation node = case node of
   S.Node (S.Annotation _ str _) [] c -> return str
-  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
+  _  -> Left (Err $ "Fatal: malformed annotation node (" ++ show node ++ ")")
 
 -- | Translation of Arguments
 translateArg :: S.ParseNode -> Either ErrMsg (ID, TypeExpr Location)
@@ -462,7 +470,7 @@ translateArg node = case node of
     id <- translateIdent idnode
     return $ (id, typ)
 
-  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
+  _  -> Left (Err $ "Fatal: malformed argument node (" ++ show node ++ ")")
 
 -- | Translation of statements
 translateStmt :: S.ParseNode -> Either ErrMsg (Stmt Location)
@@ -590,10 +598,10 @@ translateStmt node = case node of
     id <- translateIdent idnode
     return $ SDeclare c (DVar id ty Nothing False)
 
-  S.Node S.MeasureArrowAssignmentStmt [srcidexpr, tgtidexpr] c -> do
-    srcid <- translateAccessPath srcidexpr
-    tgtid <- translateExpr tgtidexpr
-    return $ SAssign c srcid (EMeasure c tgtid)
+  S.Node S.MeasureArrowAssignmentStmt [srcexpr, tgtexpr] c -> do
+    src <- translateExpr srcexpr
+    tgt <- translateAccessPath tgtexpr
+    return $ SAssign c tgt src
 
   S.Node S.CregOldStyleDeclStmt [idnode, exprnode] c -> do
     id <- translateIdent idnode
@@ -632,7 +640,7 @@ translateStmt node = case node of
     body <- translateStmt bodynode
     return $ SWhile c cond body
 
-  _  -> Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
+  _  -> Left (Err $ "Fatal: malformed statement node (" ++ show node ++ ")")
 
 -- | Translation of unary operators
 translateUOp :: S.Token -> Either ErrMsg UOp
@@ -644,24 +652,26 @@ translateUOp token = case token of
 -- | Translation of binary operators
 translateBOp :: S.Token -> Either ErrMsg BinOp
 translateBOp token = case token of
-  S.PlusToken            -> return PlusOp
-  S.DoublePlusToken      -> return ConcatOp
-  S.MinusToken           -> return MinusOp
-  S.AsteriskToken        -> return TimesOp
-  S.DoubleAsteriskToken  -> return PowOp
-  S.SlashToken           -> return DivOp
-  S.PercentToken         -> return ModOp
-  S.PipeToken            -> return OrOp
-  S.DoublePipeToken      -> return OrOp
-  S.AmpersandToken       -> return AndOp
-  S.DoubleAmpersandToken -> return AndOp
-  S.CaretToken           -> return XorOp
-  S.LessToken            -> return LTOp
-  S.LessEqualsToken      -> return LEqOp
-  S.GreaterToken         -> return GTOp
-  S.GreaterEqualsToken   -> return GEqOp
-  S.DoubleLessToken      -> return LShiftOp
-  S.DoubleGreaterToken   -> return RShiftOp
+  S.PlusToken                   -> return PlusOp
+  S.DoublePlusToken             -> return ConcatOp
+  S.MinusToken                  -> return MinusOp
+  S.AsteriskToken               -> return TimesOp
+  S.DoubleAsteriskToken         -> return PowOp
+  S.SlashToken                  -> return DivOp
+  S.PercentToken                -> return ModOp
+  S.PipeToken                   -> return OrOp
+  S.DoublePipeToken             -> return OrOp
+  S.AmpersandToken              -> return AndOp
+  S.DoubleAmpersandToken        -> return AndOp
+  S.CaretToken                  -> return XorOp
+  S.LessToken                   -> return LTOp
+  S.LessEqualsToken             -> return LEqOp
+  S.GreaterToken                -> return GTOp
+  S.GreaterEqualsToken          -> return GEqOp
+  S.DoubleLessToken             -> return LShiftOp
+  S.DoubleGreaterToken          -> return RShiftOp
+  S.ExclamationPointEqualsToken -> return NEqOp
+  _                             -> error $ "Unexpected operator token " ++ show token
 
 -- | Translation of compound assignment operators
 translateCompoundAOp :: S.Token -> Either ErrMsg (Maybe BinOp)
