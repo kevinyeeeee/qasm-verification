@@ -187,6 +187,7 @@ data Expr a = EVar a ID
             | ECall a ID [(Expr a)]
             | EMeasure a (Expr a)
             | EInt a Int
+            | EBits a [Bool]
             | EFloat a Double
             | ECmplx a (Complex Double)
             | ESlice a (Expr a) (Maybe (Expr a)) (Expr a) -- Inclusive on both ends
@@ -207,6 +208,7 @@ instance Annotated Expr where
     ECall a _ _ -> a
     EMeasure a _ -> a
     EInt a _ -> a
+    EBits a _ -> a
     EFloat a _ -> a
     ECmplx a _ -> a
     ESlice a _ _ _ -> a
@@ -412,7 +414,7 @@ translateExpr node = case node of
 
   S.Node (S.BooleanLiteral b _) [] c -> return $ EBool c b
 
-  S.Node (S.BitstringLiteral xs _) [] c -> return $ EInt c (intOfBitstring xs)
+  S.Node (S.BitstringLiteral xs _) [] c -> return $ EBits c xs
 
   S.Node (S.TimingLiteral _ _) [] c -> return $ EInt c 0
 

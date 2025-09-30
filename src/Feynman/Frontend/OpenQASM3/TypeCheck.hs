@@ -519,6 +519,7 @@ tcExpr expr = case expr of
         return $ EMeasure (pureType TBool) expr
 
   EInt loc i   -> return $ EInt (EType (TInt Nothing) True) i
+  EBits loc xs -> return $ EBits (EType (TCReg $ length xs) True) xs
   EFloat loc r -> return $ EFloat (EType (TFloat Nothing) True) r
   ECmplx loc c -> return $ ECmplx (EType (TCmplx Nothing) True) c
 
@@ -572,6 +573,7 @@ tcExpr expr = case expr of
 evalUInt :: Expr ElaboratedType -> TC Int
 evalUInt expr = case expr of
   EInt _ i -> return i
+  EBits _ xs -> return $ foldr (+) 0 . map (\(b,i) -> if b then shift 1 i else 0) $ zip xs [0..]
   EUOp _ uop expr -> liftM (evalUOp uop) $ evalUInt expr
   EBOp _ expr bop expr' ->
     pure (\a b -> evalBOp a bop b) <*> (evalUInt expr) <*> (evalUInt expr')
