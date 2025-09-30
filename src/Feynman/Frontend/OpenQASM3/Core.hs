@@ -600,6 +600,10 @@ translateStmt node = case node of
     id <- translateIdent idnode
     return $ SDeclare c (DVar id ty Nothing False)
 
+  S.Node S.MeasureArrowAssignmentStmt [srcexpr, S.NilNode] c -> do
+    src <- translateExpr srcexpr
+    return $ SExpr c src
+
   S.Node S.MeasureArrowAssignmentStmt [srcexpr, tgtexpr] c -> do
     src <- translateExpr srcexpr
     tgt <- translateAccessPath tgtexpr
