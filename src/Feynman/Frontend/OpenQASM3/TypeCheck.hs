@@ -25,16 +25,23 @@ import Feynman.Frontend.OpenQASM3.Core
 
 -- | Type elaborate with compile-time constant declarations
 data ElaboratedType = EType { ty :: Type,
-                              isConstant :: Bool
+                              isConstant :: Bool,
+                              -- Int constants, the only constants needed
+                              -- for type checking
+                              value :: Maybe Int
                             } deriving (Show)
 
 -- | Insert a type into an elaborated type
 pureType :: Type -> ElaboratedType
-pureType ty = EType ty False
+pureType ty = EType ty False Nothing
 
 -- | Insert a constant type into an elaborated type
 constType :: Type -> ElaboratedType
-constType ty = EType ty True
+constType ty = EType ty True Nothing
+
+-- | Insert a constant type into an elaborated type
+constInt :: Type -> Int -> ElaboratedType
+constInt ty i = EType ty True (Just i)
 
 -- | Gets the base type of an AST node annotated with an elaborated type
 typeof :: Annotated f => f ElaboratedType -> Type
@@ -46,8 +53,7 @@ asTypeExpr' = asTypeExpr (pureType $ TUInt Nothing)
 
 -- | Type checking environment, consisting of bindings to
 --   elaborate types and a list of error messages
-data Env = Env { constants :: Map ID ElaboratedType,
-                 scopes :: [Map ID ElaboratedType],
+data Env = Env { scopes :: [Map ID ElaboratedType],
                  errs  :: [ErrMsg]
                } deriving (Show)
 
@@ -56,11 +62,11 @@ type TC = State Env
 
 -- | The empty environment
 emptyEnv :: Env
-emptyEnv = Env Map.empty [Map.empty] []
+emptyEnv = Env [Map.empty] []
 
 -- | Environment pre-populated with built in gates
 initEnv :: Env
-initEnv = Env (fmap constType $ Map.fromList stdTypes) [Map.empty] []
+initEnv = Env [fmap constType $ Map.fromList stdTypes] []
 
 -- | Logs an error message
 logMsg :: String -> TC ()
@@ -78,7 +84,8 @@ popScope = modify (\env -> env { scopes = Map.empty:(scopes env) })
 openProcScope :: [(ID, Type)] -> TC [Map ID ElaboratedType]
 openProcScope lVars = do
   lScopes <- gets scopes
-  modify (\env -> env { scopes = [Map.fromList $ map (fmap pureType) lVars] })
+  let gScope = Map.filter isConstant . head $ reverse lScopes
+  modify (\env -> env { scopes = [Map.fromList $ map (fmap pureType) lVars, gScope] })
   return lScopes
 
 -- | Closes a procedure scope, restoring the old scopes
@@ -89,7 +96,7 @@ closeProcScope lScopes = modify (\env -> env { scopes = lScopes })
 getBinding :: ID -> TC (Maybe ElaboratedType)
 getBinding x = do
   env <- get
-  return . msum . map (Map.lookup x) $ scopes env ++ [constants env]
+  return . msum . map (Map.lookup x) $ scopes env
 
 -- | Assigns a binding to an identifier. Causes an error if the identifier has a
 --   binding in the current scope
@@ -99,7 +106,7 @@ assign var typ = do
   case Map.lookup var (head $ scopes env) of
     Nothing -> put $ env{scopes = (Map.insert var typ . head $ scopes env):(tail $ scopes env)}
     Just _  -> do
-      logMsg $ "Error: Declaration of " ++ var ++ " shadows existing definition"
+      logMsg $ "Error: Declaration of " ++ var ++ " shadows existing declaration"
       return ()
 
 -- | Types of the standard library gates
@@ -318,7 +325,11 @@ tcDecl decl = case decl of
   DVar var typ val isConstant -> do
     typ <- resolveType typ
     val <- mapM (flip tcExprAs typ) val
-    assign var (EType typ isConstant)
+    intVal <- case (isConstant, typ, val) of
+      (True,TInt _,Just expr)  -> evalUInt expr >>= return . Just
+      (True,TUInt _,Just expr) -> evalUInt expr >>= return . Just
+      _                        -> return Nothing
+    assign var (EType typ isConstant intVal)
     return $ DVar var (asTypeExpr' typ) val isConstant
 
   DDef var params ret body -> do
@@ -330,7 +341,7 @@ tcDecl decl = case decl of
     scopes <- openProcScope $ (var,fTyp):params
     body <- tcStmt body
     closeProcScope scopes
-    assign var (EType fTyp True)
+    assign var (constType fTyp)
     return  $ DDef var (map (fmap asTypeExpr') params) (fmap asTypeExpr' ret) body
 
   DGate var cparams qparams body -> do
@@ -341,13 +352,13 @@ tcDecl decl = case decl of
     scopes <- openProcScope $ [(var,fTyp)] ++ cparams ++ (zip qparams $ repeat TQBit)
     body <- tcStmt body
     closeProcScope scopes
-    assign var (EType fTyp True)
+    assign var (constType fTyp)
     return  $ DGate var (map (fmap asTypeExpr') cparams) qparams body
 
   DExtern var params ret -> do
     params <- mapM resolveType params
     ret    <- mapM resolveType ret
-    assign var (EType (TProc params ret) True)
+    assign var (constType $ TProc params ret)
     return $ DExtern var (map asTypeExpr' params) (fmap asTypeExpr' ret)
 
   DAlias var exprs -> do
@@ -386,7 +397,7 @@ tcStmt stmt = case stmt of
       logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ id
       return $ SGateCall unitTy [] id [] []
 
-    Just (EType (TGate nC nQ) _) -> do
+    Just (EType (TGate nC nQ) _ _) -> do
       mods <- mapM tcModifier mods
       cargs <- mapM (flip tcExprAs (TFloat Nothing)) cargs
       qargs <- broadcast =<< mapM tcAccessPath qargs
@@ -399,7 +410,7 @@ tcStmt stmt = case stmt of
 
   SAssign loc ap expr -> do
     ap <- tcAccessPath ap
-    let (EType ty isConstant) = getAnnotation ap
+    let (EType ty isConstant _) = getAnnotation ap
     when isConstant $
       logMsg $ "Error at (" ++ show loc ++ "): Modifying constant lvalue " ++ show ap
     expr <- tcExprAs expr (typeof ap)
@@ -409,7 +420,7 @@ tcStmt stmt = case stmt of
     typ <- resolveType typ
     expr <- tcExprAs expr (TRange typ)
     pushScope
-    assign var (EType typ False)
+    assign var (pureType typ)
     stmt <- tcStmt stmt
     popScope
     return $ SFor unitTy (var, asTypeExpr' typ) expr stmt
@@ -448,7 +459,7 @@ tcStmt stmt = case stmt of
 
   SPragma loc str -> return $ SPragma unitTy str
 
-  where unitTy = EType TUnit False
+  where unitTy = pureType TUnit
     
 -- | Broadcasting gate arguments
 broadcast :: [AccessPath ElaboratedType] -> TC [[AccessPath ElaboratedType]]
@@ -458,12 +469,13 @@ broadcast xs = case foldM go (-1) xs of
   Just i    -> return [map (deref j) xs | j <- [0..i-1]]
   where
     go i ap = case (i, getAnnotation ap) of
-      (i, EType TQBit _)      -> Just i
-      (-1, EType (TQReg j) _) -> Just j
-      (i, EType (TQReg j) _)  -> if i == j then Just i else Nothing
+      (i, EType TQBit _ _)      -> Just i
+      (-1, EType (TQReg j) _ _) -> Just j
+      (i, EType (TQReg j) _ _)  -> if i == j then Just i else Nothing
 
     deref i ap = case ap of
-      AVar (EType (TQReg _) c) var -> AIndex (EType TQBit c) var (EInt (pureType $ TUInt Nothing) i)
+      AVar (EType (TQReg _) c v) var ->
+        AIndex (EType TQBit c v) var (EInt (pureType $ TUInt Nothing) i)
       _                            -> ap
       
 
@@ -501,7 +513,7 @@ tcExpr expr = case expr of
         logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ var
         args <- mapM tcExpr args
         return $ ECall (pureType TUnit) var args
-      Just (EType (TProc params ret) _) -> do
+      Just (EType (TProc params ret) _ _) -> do
         args <- mapM (uncurry tcExprAs) (zip args params)
         return $ ECall (pureType $ fromMaybe TUnit ret) var args 
       Just _ -> do
@@ -518,10 +530,10 @@ tcExpr expr = case expr of
         logMsg $ "Type error at (" ++ show loc ++ "): measure of non-qubit or qreg argument"
         return $ EMeasure (pureType TBool) expr
 
-  EInt loc i   -> return $ EInt (EType (TInt Nothing) True) i
-  EBits loc xs -> return $ EBits (EType (TCReg $ length xs) True) xs
-  EFloat loc r -> return $ EFloat (EType (TFloat Nothing) True) r
-  ECmplx loc c -> return $ ECmplx (EType (TCmplx Nothing) True) c
+  EInt loc i   -> return $ EInt (constInt (TInt Nothing) i) i
+  EBits loc xs -> return $ EBits (constType (TCReg $ length xs)) xs
+  EFloat loc r -> return $ EFloat (constType (TFloat Nothing)) r
+  ECmplx loc c -> return $ ECmplx (constType (TCmplx Nothing)) c
 
   ESlice loc init step end -> do
     init <- tcExprAs init (TInt Nothing)
@@ -533,9 +545,9 @@ tcExpr expr = case expr of
     exprs <- mapM (flip tcExprAs $ TUInt Nothing) exprs
     return $ ESet (pureType $ TRange (TUInt Nothing)) exprs
 
-  EPi loc -> return $ EPi (EType (TFloat Nothing) True)
-  EIm loc -> return $ EIm (EType (TCmplx Nothing) True)
-  EBool loc b -> return $ EBool (EType TBool True) b
+  EPi loc -> return $ EPi (constType (TFloat Nothing))
+  EIm loc -> return $ EIm (constType (TCmplx Nothing))
+  EBool loc b -> return $ EBool (constType TBool) b
 
   EUOp loc uop expr -> do
     expr <- tcExpr expr
@@ -555,7 +567,7 @@ tcExpr expr = case expr of
         return $ EBOp (getAnnotation expr) expr bop expr'
       Just rTyp ->
         let isConstTy = isConstant . getAnnotation in
-          return $ EBOp (EType rTyp (isConstTy expr && isConstTy expr')) expr bop expr'
+          return $ EBOp (EType rTyp (isConstTy expr && isConstTy expr') Nothing) expr bop expr'
 
   EStmt loc stmt -> do
     stmt <- tcStmt stmt
@@ -572,6 +584,7 @@ tcExpr expr = case expr of
 -- | Evaluates a suitably typed expression as a UInt
 evalUInt :: Expr ElaboratedType -> TC Int
 evalUInt expr = case expr of
+  EVar _ var -> getBinding var >>= return . fromJust . value . fromJust
   EInt _ i -> return i
   EBits _ xs -> return $ foldr (+) 0 . map (\(b,i) -> if b then shift 1 i else 0) $ zip xs [0..]
   EUOp _ uop expr -> liftM (evalUOp uop) $ evalUInt expr
@@ -675,18 +688,18 @@ resolveType typ = case typ of
     tcSize = tcExpr >=> resolveExpr
 
     resolveExpr expr = case getAnnotation expr of
-      EType _ False -> do
+      EType _ False _ -> do
         logMsg $ "Error: type parameterized by non-constant expression"
         return $ 0
-      EType typ True | castable typ (TUInt Nothing) -> evalUInt expr
+      EType typ True _ | castable typ (TUInt Nothing) -> evalUInt expr
 
 {- Top-level type checking -}
 
 -- | Type checks a program and converts the result into an alternative
 tcQasm :: Prog Location -> Either [ErrMsg] (Prog ElaboratedType)
 tcQasm prog = case runState (tcProg prog) initEnv of
-  (prog, Env _ _ []) -> Right prog
-  (_, Env _ _ xs)    -> Left xs
+  (prog, Env _ []) -> Right prog
+  (_, Env _ xs)    -> Left xs
 
 -- | Prints out the list of error messages
 printErrors :: [ErrMsg] -> IO ()
