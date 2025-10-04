@@ -120,7 +120,4 @@ parseError :: [Token] -> a
 parseError xs = error $ "Parse error: " ++ concatMap show xs
 
 -- vim: ft=haskell
-
-{-parseStringAssertion :: String -> Either String Assertion
-parseStringAssertion programStr = L.runAlex programStr parseAssertion-}
 }
