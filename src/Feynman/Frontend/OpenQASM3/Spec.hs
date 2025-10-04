@@ -133,5 +133,3 @@ data Assertion = Equals SExpr SExpr
   <unary> := exp | popcount | sqrt
 
 --}
-
-{- Translation to Balanced Pathsums -}

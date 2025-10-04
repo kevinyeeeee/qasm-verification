@@ -2,6 +2,7 @@
   module Feynman.Frontend.OpenQASM3.Spec.Parser(parseAssertion,parseSExpr) where
 
 import Feynman.Frontend.OpenQASM3.Spec.Lexer
+import qualified Feynman.Frontend.OpenQASM3.Spec.Lexer as L
 import Feynman.Frontend.OpenQASM3.Spec
 }
 
@@ -119,4 +120,7 @@ parseError :: [Token] -> a
 parseError xs = error $ "Parse error: " ++ concatMap show xs
 
 -- vim: ft=haskell
+
+{-parseStringAssertion :: String -> Either String Assertion
+parseStringAssertion programStr = L.runAlex programStr parseAssertion-}
 }
