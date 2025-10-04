@@ -21,7 +21,7 @@ data ErrMsg = Err String
 
 {- Convenience types -}
 data Annotation a = 
-      Other String
+      Other (String,String)
     | Assert (Expr a,Expr a)
     | Fn (Expr a,Expr a)
     | Pre (AccessPath a,Expr a)
@@ -68,6 +68,14 @@ data Expr a = EVar ID
             | EUOp UOp (Expr a)
             | EBOp (Expr a) BinOp (Expr a)
             | EStmt (Stmt a)
+            -- Spec only sum-over-path expresions
+            | EVarDec ID (Type a)
+            | Ket (Expr a)
+            | Fun [(ID,Maybe (Type a))] (Expr a)
+            | Sum [(ID,Maybe (Type a))] (Expr a)
+            | Tensor (Expr a) (Expr a)
+            | Compose (Expr a) (Expr a)
+            | Dagger (Expr a)
             deriving (Show)
 
 data UOp = SinOp
@@ -337,7 +345,7 @@ translateModifier node = case node of
 -- | Translation of Annotations
 translateAnnotation :: S.ParseNode -> Either ErrMsg (Annotation a)
 translateAnnotation node = case node of
-  S.Node (S.Annotation _ str _) [] c -> return (Other str)
+  S.Node (S.Annotation name str _) [] c -> return (Other (name,str))
   _                                  -> Left (Err $ "Malformed annotation: " ++ show node)
 
 -- | Translation of Arguments
