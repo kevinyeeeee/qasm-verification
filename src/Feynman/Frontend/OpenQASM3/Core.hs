@@ -16,16 +16,20 @@ import Data.Bits
 import Feynman.Core (ID)
 import qualified Feynman.Frontend.OpenQASM3.Syntax as S
 
+import qualified Feynman.Frontend.OpenQASM3.Spec.Parser as SpecParser
+import qualified Feynman.Frontend.OpenQASM3.Spec.Lexer as SpecLexer
+import qualified Feynman.Frontend.OpenQASM3.Spec as Spec
+
 {- Translation errors -}
 data ErrMsg = Err String
 
 {- Convenience types -}
 data Annotation a = 
       Other (String,String)
-    | Assert (Expr a,Expr a)
+    | Assert [(AccessPath a,Expr a)]
     | Fn (Expr a,Expr a)
-    | Pre (AccessPath a,Expr a)
-    | Post (AccessPath a,Expr a)
+    | Pre [(AccessPath a,Expr a)]
+    | Post [(AccessPath a,Expr a)]
   deriving (Show)
 
 type Version    = (Int, Maybe Int)
@@ -165,6 +169,50 @@ inLst f node                 = Left (Err $ "Malformed list: " ++ show node)
 -- | Translation from concrete syntax to the core subset
 qasmToCore :: S.ParseNode -> Either ErrMsg (Prog S.SourceRef)
 qasmToCore = translateProg
+
+typeFromSpec :: a -> Spec.Type -> Type a
+typeFromSpec x Spec.Bit = TCBit
+typeFromSpec x (Spec.Reg e) = TCReg (exprFromSpec x e)
+
+accessPathFromSpec :: a -> Spec.SExpr -> AccessPath a
+accessPathFromSpec x (Spec.Var i Nothing) = AVar i
+accessPathFromSpec x (Spec.Var i (Just e')) = AIndex i (exprFromSpec x e')
+
+exprFromSpec :: a -> Spec.SExpr -> Expr a
+exprFromSpec = efs
+  where
+    efs x (Spec.Var i Nothing) = EVar i
+    efs x (Spec.Var i (Just e')) = EIndex (EVar i) (efs x e')
+    efs x (Spec.VarDec i t) = EVarDec i (typeFromSpec x t)
+    efs x (Spec.ILit i) = EInt i
+    efs x (Spec.RLit r) = EFloat r
+    efs x (Spec.Pi) = EPi 
+    efs x (Spec.BExp e1 b e2) = EBOp (efs x e1) (bfs b) (efs x e2)
+    efs x (Spec.UExp u e') = EUOp (ufs u) (efs x e')
+    efs x (Spec.Ket e') = Ket (efs x e')
+    efs x (Spec.Fun bindings e') = 
+      Fun (fmap (\(i,mt) -> (i,fmap (typeFromSpec x) mt)) bindings) (efs x e')
+    efs x (Spec.Sum bindings e') = 
+      Sum (fmap (\(i,mt) -> (i,fmap (typeFromSpec x) mt)) bindings) (efs x e')
+    efs x (Spec.Tensor e1 e2) = Tensor (efs x e1) (efs x e2)
+    efs x (Spec.Compose e1 e2) = Compose (efs x e1) (efs x e2)
+    efs x (Spec.Dagger e') = Dagger (efs x e')
+
+    bfs Spec.Plus = PlusOp
+    bfs Spec.Minus = MinusOp
+    bfs Spec.Times = TimesOp
+    bfs Spec.Div = DivOp
+    bfs Spec.Mod = ModOp
+    bfs Spec.Pow = PowOp
+    bfs Spec.LShift = LShiftOp
+    bfs Spec.RShift = RShiftOp
+    bfs Spec.LRot = LRotOp
+    bfs Spec.RRot = RRotOp
+
+    ufs Spec.Neg = NegOp
+    ufs Spec.Wt = PopcountOp
+    ufs Spec.Exp = ExpOp
+    ufs Spec.Sqrt = SqrtOp
 
 -- | Top-level translation
 translateProg :: S.ParseNode -> Either ErrMsg (Prog S.SourceRef)
@@ -343,10 +391,24 @@ translateModifier node = case node of
   _                          -> Left (Err $ "Malformed modifier: " ++ show node)
 
 -- | Translation of Annotations
-translateAnnotation :: S.ParseNode -> Either ErrMsg (Annotation a)
+translateAnnotation :: S.ParseNode -> Either ErrMsg (Annotation S.SourceRef)
 translateAnnotation node = case node of
-  S.Node (S.Annotation name str _) [] c -> return (Other (name,str))
+  S.Node (S.Annotation "assert" str _) [] c -> 
+    let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
+    Right (Assert (translateAssertions c assertions))
+  S.Node (S.Annotation "fn" str _) [] c -> return (Fn (error "TODO"))
+  S.Node (S.Annotation "pre" str _) [] c -> 
+    let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
+    Right (Pre (translateAssertions c assertions))
+  S.Node (S.Annotation "post" str _) [] c ->
+    let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
+    Right (Post (translateAssertions c assertions))
+  S.Node (S.Annotation a str _) [] c -> return (Other (a,str))
   _                                  -> Left (Err $ "Malformed annotation: " ++ show node)
+  where 
+    translateAssertions c assertions = 
+      fmap (\(Spec.Equals e1 e2) -> (accessPathFromSpec c e1,exprFromSpec c e2)) assertions
+
 
 -- | Translation of Arguments
 translateArg :: S.ParseNode -> Either ErrMsg (ID, Type S.SourceRef)
