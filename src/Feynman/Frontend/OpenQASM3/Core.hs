@@ -14,6 +14,8 @@ module Feynman.Frontend.OpenQASM3.Core where
 import Control.Monad
 import Data.Complex
 import Data.Bits
+import Data.List
+import Data.Maybe
 
 import Feynman.Core (ID)
 import qualified Feynman.Frontend.OpenQASM3.Syntax as S
@@ -269,6 +271,162 @@ inLst :: (S.ParseNode -> Either ErrMsg b) -> S.ParseNode -> Either ErrMsg [b]
 inLst f S.NilNode            = return []
 inLst f (S.Node S.List xs c) = mapM f xs
 inLst f node                 = Left (Err $ "Fatal: malformed ast node (" ++ show node ++ ")")
+
+{- Pretty printing -}
+
+
+-- | Pretty prints the AST
+prettyPrint :: Prog a -> [String]
+prettyPrint (Prog (i,j) stmts) = [header] ++ concatMap prettyPrintStmt stmts where
+  header = "OPENQASM " ++ show i ++ (maybe "" (("." ++) . show) j) ++ ";"
+
+-- | Pretty prints a statement
+prettyPrintStmt :: Stmt a -> [String]
+prettyPrintStmt stmt = case stmt of
+  SSkip _ -> [""]
+  SDeclare _ decl -> prettyPrintDecl decl
+  SBarrier _ xs -> ["barrier " ++ intercalate "," (map prettyPrintAP xs) ++ ";"]
+  SBlock _ xs -> ["{"] ++ map ("  " ++) (concatMap prettyPrintStmt xs) ++ ["}"]
+  SExpr _ expr -> [prettyPrintExpr expr ++ ";"]
+  SGateCall _ mods id cargs qargs -> [m ++ " " ++ id ++ "(" ++ c ++ ")" ++ " " ++ q ++ ";"] where
+    m = concatMap prettyPrintMod mods
+    c = intercalate "," $ map prettyPrintExpr cargs
+    q = intercalate "," $ map prettyPrintAP qargs
+  SAssign _ ap expr -> [prettyPrintAP ap ++ " = " ++ prettyPrintExpr expr  ++ ";"]
+  SFor _ (var, typ) expr stmt -> header:body ++ ["}"] where
+    header = "for " ++ prettyPrintType typ ++ " " ++ var ++ " in " ++ prettyPrintExpr expr ++ "{"
+    body = map ("  " ++) $ prettyPrintStmt stmt
+  SBreak _ -> ["break;"]
+  SContinue _ -> ["continue;"]
+  SEnd _ -> ["end;"]
+  SIf _ expr stmt stmt' -> ["if (" ++ e ++ ") {"] ++ i ++ ["} else {"] ++ el ++ ["}"] where
+    e  = prettyPrintExpr expr
+    i  = map ("  " ++) $ prettyPrintStmt stmt
+    el = map ("  " ++) $ prettyPrintStmt stmt'
+  SReset _ expr -> ["reset " ++ prettyPrintExpr expr ++ ";"]
+  SReturn _ mexpr -> ["return " ++ (maybe "" prettyPrintExpr mexpr) ++ ";"] 
+  SWhile _ expr stmt -> ["while (" ++ prettyPrintExpr expr ++ ") {"] ++ body ++ ["}"] where
+    body = map ("  " ++) $ prettyPrintStmt stmt
+  SAnnotated _ annots stmt -> map ("@" ++) annots ++ prettyPrintStmt stmt
+  SPragma _ str -> ["pragma " ++ str]
+
+-- | Pretty prints a declaration
+prettyPrintDecl :: Decl a -> [String]
+prettyPrintDecl decl = case decl of 
+  DVar var typ val isConstant -> [c ++ t ++ " " ++ var ++ init ++ ";"] where
+    c = if isConstant then "const " else ""
+    t = prettyPrintType typ
+    init = maybe "" (\expr -> " = " ++ prettyPrintExpr expr) val
+  DDef var params ret body -> ["def " ++ var ++ "(" ++ p ++ ")" ++ r ++ "{"] ++ b ++ ["}"] where
+    p = intercalate "," . map (\(id,typ) -> prettyPrintType typ ++ " " ++ id) $ params
+    r = maybe "" ((" -> " ++) . prettyPrintType) ret
+    b = map ("  " ++) $ prettyPrintStmt body
+  DGate var cp qp body -> ["gate " ++ var ++ "(" ++ p ++ ") " ++ q ++ "{"] ++ b ++ ["}"] where
+    p = intercalate "," . map (\(id,typ) -> prettyPrintType typ ++ " " ++ id) $ cp
+    q = intercalate "," qp
+    b = map ("  " ++) $ prettyPrintStmt body
+  DExtern var params ret -> ["extern " ++ var ++ "(" ++ p ++ ")" ++ r ++ ";"] where
+    p = intercalate "," . map prettyPrintType $ params
+    r = maybe "" ((" -> " ++) . prettyPrintType) ret
+  DAlias var exprs -> ["let " ++ var ++ " = " ++ e ++ ";"] where
+    e = intercalate " ++ " $ map prettyPrintExpr exprs
+
+-- | Pretty prints an expression
+prettyPrintExpr :: Expr a -> String
+prettyPrintExpr expr = case expr of
+  EVar _ var -> var
+  EIndex _ expr idx -> prettyPrintExpr expr ++ "[" ++ prettyPrintExpr idx ++ "]"
+  ECall _ var args -> var ++ "(" ++ intercalate "," (map prettyPrintExpr args) ++ ")"
+  EMeasure _ expr -> "measure " ++ prettyPrintExpr expr
+  EInt _ i   -> show i
+  EBits _ xs -> "\"" ++ concatMap (\b -> if b then "1" else "0") xs ++ "\""
+  EFloat _ r -> show r
+  ECmplx _ c -> show c
+  ESlice _ init step end -> "[" ++ prettyPrintExpr init ++ ":" ++ s ++ prettyPrintExpr end ++ "]"
+    where s = maybe "" (\e -> prettyPrintExpr e ++ ":") step
+  ESet _ exprs -> "{" ++ intercalate "," (map prettyPrintExpr exprs) ++ "}"
+  EPi _ -> "pi"
+  EIm _ -> "im"
+  EBool _ b -> if b then "1" else "0"
+  EUOp _ uop expr -> let e = prettyPrintExpr expr in case uop of
+    SinOp      -> "sin(" ++ e ++ ")"
+    CosOp      -> "cos(" ++ e ++ ")"
+    TanOp      -> "tan(" ++ e ++ ")"  
+    ArcsinOp   -> "arcsin(" ++ e ++ ")" 
+    ArccosOp   -> "arccos(" ++ e ++ ")" 
+    ArctanOp   -> "arctan(" ++ e ++ ")" 
+    CeilOp     -> "ceil(" ++ e ++ ")" 
+    FloorOp    -> "floor(" ++ e ++ ")" 
+    ExpOp      -> "exp(" ++ e ++ ")" 
+    LnOp       -> "log(" ++ e ++ ")" 
+    SqrtOp     -> "sqrt(" ++ e ++ ")" 
+    RealOp     -> "real(" ++ e ++ ")" 
+    ImOp       -> "im(" ++ e ++ ")" 
+    NegOp      -> "~" ++ e
+    UMinusOp   -> "-" ++ e
+    PopcountOp -> "popcount(" ++ e ++ ")"
+  EBOp _ expr bop expr' -> case bop of
+    AndOp    -> e ++ " & " ++ e'
+    OrOp     -> e ++ " | " ++ e'
+    XorOp    -> e ++ " ^ " ++ e'
+    LShiftOp -> e ++ " << " ++ e'
+    RShiftOp -> e ++ " >> " ++ e'
+    LRotOp   -> "rotl(" ++ e ++ "," ++ e' ++ ")"
+    RRotOp   -> "rotr(" ++ e ++ "," ++ e' ++ ")"
+    EqOp     -> e ++ " == " ++ e'
+    NEqOp    -> e ++ " != " ++ e'
+    LTOp     -> e ++ " < " ++ e'
+    LEqOp    -> e ++ " <= " ++ e'
+    GTOp     -> e ++ " > " ++ e'
+    GEqOp    -> e ++ " >= " ++ e'
+    PlusOp   -> e ++ " + " ++ e'
+    MinusOp  -> e ++ " - " ++ e'
+    TimesOp  -> e ++ " * " ++ e'
+    DivOp    -> e ++ " / " ++ e'
+    ModOp    -> e ++ " % " ++ e'
+    PowOp    -> e ++ " ** " ++ e'
+    ConcatOp -> e ++ " ++ " ++ e'
+    where e  = prettyPrintExpr expr
+          e' = prettyPrintExpr expr'
+  EStmt _ stmt -> concat $ prettyPrintStmt stmt
+  ECast _ typexpr expr -> prettyPrintType typexpr ++ "(" ++ prettyPrintExpr expr ++ ")"
+
+-- | Pretty prints an access path
+prettyPrintAP :: AccessPath a -> String
+prettyPrintAP ap = case ap of
+  AVar _ var       -> var
+  AIndex _ var idx -> var ++ "[" ++ prettyPrintExpr idx ++ "]"
+  
+-- | Pretty prints a gate modifier
+prettyPrintMod :: Modifier a -> String
+prettyPrintMod mod = case mod of 
+  MCtrl _ neg mexpr -> mstr ++ argstr ++ " @ " where
+    mstr = if neg then "negctrl" else "ctrl"
+    argstr = case mexpr of
+      Nothing -> ""
+      Just expr -> "(" ++ prettyPrintExpr expr ++ ")"
+  MInv _ -> "inv @ "
+  MPow _ expr -> "pow(" ++ prettyPrintExpr expr ++ ") @ "
+
+-- | Pretty prints a type expression
+prettyPrintType :: TypeExpr a -> String
+prettyPrintType typ = case typ of
+  TCReg expr  -> "bit[" ++ prettyPrintExpr expr ++ "]"
+  TQBit       -> "qubit"
+  TQReg expr  -> "qubit[" ++ prettyPrintExpr expr ++ "]"
+  TBool       -> "bool"
+  TUInt expr  -> "uint" ++ printSize expr
+  TInt expr   -> "int" ++ printSize expr
+  TAngle expr -> "angle" ++ printSize expr
+  TFloat expr -> "float" ++ printSize expr
+  TCmplx expr -> "complex[float" ++ printSize expr ++ "]"
+  TUnit       -> "unit"
+  TRange ty   -> "range(" ++ prettyPrintType ty ++ ")"
+  TGate nc nq -> "gate(" ++ show nc ++ "," ++ show nq ++ ")"
+  TProc at rt -> let ret = maybe "unit" prettyPrintType rt in
+    intercalate " -> " $ map prettyPrintType at ++ [ret]
+  where printSize Nothing     = ""
+        printSize (Just expr) = "[" ++ prettyPrintExpr expr ++ "]"
 
 {- First translation to core AST -}
 
