@@ -26,10 +26,10 @@ data ErrMsg = Err String
 {- Convenience types -}
 data Annotation a = 
       Other (String,String)
-    | Assert [(Expr a,Expr a)]
+    | Assert [(AccessPath a,Expr a)]
     | Fn (Expr a,Expr a)
-    | Pre (AccessPath a,Expr a)
-    | Post (AccessPath a,Expr a)
+    | Pre [(AccessPath a,Expr a)]
+    | Post [(AccessPath a,Expr a)]
   deriving (Show)
 
 type Version    = (Int, Maybe Int)
@@ -173,6 +173,10 @@ qasmToCore = translateProg
 typeFromSpec :: a -> Spec.Type -> Type a
 typeFromSpec x Spec.Bit = TCBit
 typeFromSpec x (Spec.Reg e) = TCReg (exprFromSpec x e)
+
+accessPathFromSpec :: a -> Spec.SExpr -> AccessPath a
+accessPathFromSpec x (Spec.Var i Nothing) = AVar i
+accessPathFromSpec x (Spec.Var i (Just e')) = AIndex i (exprFromSpec x e')
 
 exprFromSpec :: a -> Spec.SExpr -> Expr a
 exprFromSpec = efs
@@ -393,13 +397,17 @@ translateAnnotation node = case node of
     let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
     Right (Assert (translateAssertions c assertions))
   S.Node (S.Annotation "fn" str _) [] c -> return (Fn (error "TODO"))
-  S.Node (S.Annotation "pre" str _) [] c -> return (Pre (error "TODO"))
-  S.Node (S.Annotation "post" str _) [] c -> return (Post (error "TODO"))
+  S.Node (S.Annotation "pre" str _) [] c -> 
+    let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
+    Right (Pre (translateAssertions c assertions))
+  S.Node (S.Annotation "post" str _) [] c ->
+    let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
+    Right (Post (translateAssertions c assertions))
   S.Node (S.Annotation a str _) [] c -> return (Other (a,str))
   _                                  -> Left (Err $ "Malformed annotation: " ++ show node)
   where 
     translateAssertions c assertions = 
-      fmap (\(Spec.Equals e1 e2) -> (exprFromSpec c e1,exprFromSpec c e2)) assertions
+      fmap (\(Spec.Equals e1 e2) -> (accessPathFromSpec c e1,exprFromSpec c e2)) assertions
 
 
 -- | Translation of Arguments
