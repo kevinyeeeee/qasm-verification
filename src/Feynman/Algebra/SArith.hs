@@ -26,7 +26,11 @@ import Feynman.Algebra.Polynomial.Multilinear
  ----------------------------}
 
 -- | Symbolic (bit-blasted) unsigned integers. The lowest-order bit is the first bit
-type SUInt v = [SBool v]
+newtype SUInt v = SUInt [SBool v]
+
+-- | Symbolic (bit-blasted) integers. The lowest-order bit is the first bit,
+--   with the last bit the sign bit
+newtype SInt v = SInt [SBool v]
 
 {---------------------------
  Utilities
@@ -40,20 +44,24 @@ getWidth = length
 setWidth :: MVar v => SUInt v -> Int -> SUInt v
 setWidth sa n = take n sa ++ (replicate (n - length sa) 0)
 
--- | Turns an integer into a symbolic uint[n]
-makeSUInt :: MVar v => Integer -> Int -> SUInt v
-makeSUInt i n
-  | i < 0     = makeSUInt ((1 `shiftL` n) - 1) n
-  | otherwise = setWidth (makeSNat i) n
+-- | Turns an arbitrary integer into a symbolic int
+makeSInt :: MVar v => Integer -> SInt v
+makeSInt i
+  | i < 0     = sNeg $ go (-i)
+  | otherwise = go i
+  where go 0  = []
+        go i  = case i `mod` 2 of
+          0 -> 0:go (i `shiftR` 1)
+          1 -> 1:go (i `shiftR` 1)
 
 -- | Turns a positive integer into a symbolic uint of arbitrary length
-makeSNat :: MVar v => Integer -> SUInt v
-makeSNat i
+makeSUInt :: MVar v => Integer -> SUInt v
+makeSUInt i
   | i == 0    = []
   | i < 0     = error "Can't represent signed integers"
   | otherwise = case i `mod` 2 of
-      0 -> 0:makeSNat (i `shiftR` 1)
-      1 -> 1:makeSNat (i `shiftR` 1)
+      0 -> 0:makeSUInt (i `shiftR` 1)
+      1 -> 1:makeSUInt (i `shiftR` 1)
 
 -- | Converts a constant bit-blasted integer back to an integer
 toNat :: MVar v => SUInt v -> Maybe Integer
@@ -69,6 +77,8 @@ isNat = isJust . toNat
 -- | Forces a symbolic uint to a Nat. Throws an error if it is symbolic
 forceNat :: MVar v => SUInt v -> Integer
 forceNat = fromJust . toNat
+
+-- | 
 
 -- | Given x:uint[n], generates the list of indicator polynomials:
 --    [x==0, x==1, x==2, ..., x==2^n-1]
@@ -87,7 +97,11 @@ indicatorSum f s t = foldr (zipWith (+)) (repeat 0) $ zipWith (\l ind -> map (in
 
 -- | If-then-else
 ite :: MVar v => SBool v -> SUInt v -> SUInt v -> SUInt v
-ite p = zipWith (\a b -> p*a + (1 + p)*b) 
+ite p a b = 
+  | n /= m    = ite p (setWidth a (max n m)) (setWidth b (max n m))
+  | otherwise = zipWith (\a b -> p*a + (1 + p)*b) a b
+  where n = getWidth a
+        m = getWidth b
 
 {---------------------------
  Bitwise operators
@@ -152,13 +166,15 @@ sPopcount s = foldl sPlus (replicate (length s) 0) $ map (\a -> [a]) $ s
 sPlus :: MVar v => SUInt v -> SUInt v -> SUInt v
 sPlus s t = unfoldr computePair start
   where
-    start                       = (0, s, t ++ repeat 0)
-    computePair (_, []  , _   ) = Nothing
+    start                       = (0, s, t)
+    computePair (_, []  , [])   = Nothing
+    computePair (c, x:xs, [])   = Just (c + x, (x*c, xs, []))
+    computePair (c, []  , y:ys) = Just (c + y, (y*c, [], ys))
     computePair (c, x:xs, y:ys) = Just (c + x + y, (x * y + (x + y)*c, xs, ys))
 
 -- | Negating a number mod 2^n using 2's complement
 sNeg :: MVar v => SUInt v -> SUInt v
-sNeg s = sPlus (makeSUInt 1 n) (sNot s) where n = getWidth s
+sNeg s = sPlus (makeSUInt 1) (sNot s) where n = getWidth s
 
 -- | Subtraction mod 2^n
 sMinus :: MVar v => SUInt v -> SUInt v -> SUInt v
@@ -166,15 +182,13 @@ sMinus s t = sPlus s (sNeg t)
 
 -- | Multiplication mod 2^n
 sMult :: MVar v => SUInt v -> SUInt v -> SUInt v
-sMult s t = setWidth v n where
-  n = getWidth s
-  v = foldr sPlus (makeSUInt 0 (2*n)) . map (\i -> setWidth i (2*n)) $ shifts
+sMult s t = foldr sPlus (makeSUInt 0) $ shifts where
   shifts = [replicate i 0 ++ map (*p) t | (i,p) <- zip [0..] s]
 
 -- | Division mod 2^n. Performs binary long division
 sDiv :: MVar v => SUInt v -> SUInt v -> (SUInt v, SUInt v)
-sDiv s t | t == makeSUInt 0 (getWidth t) = error "Divide by 0"
-         | otherwise                     = go ([], makeSUInt 0 n) (n-1) where
+sDiv s t | t == makeSUInt 0 = error "Divide by 0"
+         | otherwise        = go ([], makeSUInt 0) (n-1) where
              n          = getWidth s
              go (q,r) (-1) = (q,r)
              go (q,r) i    =
@@ -191,9 +205,8 @@ sMod s t = snd $ sDiv s t
 
 -- | Power mod 2^n
 sPow :: MVar v => SUInt v -> SUInt v -> SUInt v
-sPow s t = foldr sMult (makeSUInt 1 n) powers where
-  n       = getWidth s
-  powers  = map (\(s,t) -> ite t s (makeSUInt 1 n)) $ zip squares t
+sPow s t = foldr sMult (makeSUInt 1) powers where
+  powers  = map (\(s,t) -> ite t s (makeSUInt 1)) $ zip squares t
   squares = [s] ++ [sMult x x | x <- squares]
 
 -- | Singular reduction of an integer mod M. Useful for windowed
@@ -253,7 +266,7 @@ sEq s t
 
 -- Convenience definitions for testing
 liftWord :: Word8 -> SUInt String
-liftWord i = makeSUInt (fromIntegral i) 8
+liftWord i = setWidth (makeSUInt (fromIntegral i)) 8
 
 forceWord :: SUInt String -> Word8
 forceWord = fromIntegral . forceNat
