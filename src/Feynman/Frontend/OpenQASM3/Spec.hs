@@ -16,7 +16,7 @@ import Feynman.Algebra.Base (Dyadic(..), DyadicRational, DMod2)
 
 data BOp = Plus | Minus | Times | Div | Mod | Pow
          | LShift | RShift | LRot | RRot
-         | Equal | NEqual | LessThan | LessEq | GreaterThen | GreaterEq | And | Or
+         | Equal | NEqual | LessThan | LessEq | GreaterThan | GreaterEq | And | Or
          deriving (Show)
 
 data UOp = Neg | Wt | Exp | Sqrt deriving (Show)

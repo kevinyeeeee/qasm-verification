@@ -43,7 +43,7 @@ import Feynman.Frontend.OpenQASM3.Spec
   '<'      { TLAngle }
   '>'      { TRAngle }
   leq      { TLAngleEq }
-  req      { TRAngleEq }
+  geq      { TRAngleEq }
   '|'      { TBar }
   ':'      { TColon }
   ','      { TComma }
@@ -59,8 +59,8 @@ import Feynman.Frontend.OpenQASM3.Spec
 
 %%
 
-type : basetype '|' expr  { Refined $1 $3 }
-     | basetype           { $1 }
+type : basetype '|' refinement { Refined $1 $3 }
+     | basetype                { $1 }
 
 basetype : bit               { Bit }
          | bit '[' expr ']'  { Reg $3 }
@@ -74,23 +74,32 @@ assertion : sexprs '=' sexprs { Equals $1 $3 }
 sexprs : sexpr            { $1 }
        | sexprs ',' sexpr { Tensor $1 $3 }
 
-sexpr : expr                        { $1 }
-      | fun decls arrow sexpr       { Fun $2 $4 }
-      | sum '{' decls '}' '.' sexpr { Sum $3 $6 }
+sexpr : expr                    { $1 }
+      | fun decls arrow sexpr   { Fun $2 $4 }
+      | sum '{' decls '}' sexpr { Sum $3 $5 }
 
-expr : expr1          { $1 }
-     | expr '=' expr1 { BExp $1 Equal $3 }
-     | expr neq expr1 { BExp $1 NEqual $3 }
-     | expr '<' expr1 { BExp $1 LessThan $3 }
-     | expr leq expr1 { BExp $1 LessEq $3 }
-     | expr '>' expr1 { BExp $1 GreaterThan $3 }
-     | expr geq expr1 { BExp $1 GreaterEq $3 }
+refinement : refinement1               { $1 }
+           | refinement or refinement1 { BExp $1 Or $3 }
 
-expr1 : term          { $1 }
-     | expr1 '+' term { BExp $1 Plus $3 }
-     | expr1 '-' term { BExp $1 Minus $3 }
-     | expr1 '%' term { BExp $1 Mod $3 }
-     | expr1 or term { BExp $1 Or $3 }
+refinement1 : refinement2                 { $1 }
+            | refinement1 '&' refinement2 { BExp $1 And $3 }
+
+refinement2 : refinement3        { $1 }
+            | '~' refinement3    { UExp Neg $2 }
+
+refinement3 : '(' refinement ')' { $2 }
+            | expr '=' expr      { BExp $1 Equal $3 }
+            | expr neq expr      { BExp $1 NEqual $3 }
+            | expr '<' expr      { BExp $1 LessThan $3 }
+            | expr leq expr      { BExp $1 LessEq $3 }
+            | expr '>' expr      { BExp $1 GreaterThan $3 }
+            | expr geq expr      { BExp $1 GreaterEq $3 }
+
+expr : term          { $1 }
+     | expr '+' term { BExp $1 Plus $3 }
+     | expr '-' term { BExp $1 Minus $3 }
+     | expr '%' term { BExp $1 Mod $3 }
+     | expr or term { BExp $1 Or $3 }
 
 term : factor          { $1 }
      | term '*' factor { BExp $1 Times $3 }
