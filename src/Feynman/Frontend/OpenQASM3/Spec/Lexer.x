@@ -50,8 +50,12 @@ tokens :-
   \`                                                        { \s -> TBacktick }
   \<                                                        { \s -> TLAngle }
   \>                                                        { \s -> TRAngle }
+  \<\=                                                      { \s -> TLAngleEq }
+  \>\=                                                      { \s -> TRAngleEq }
   \=\=                                                      { \s -> TEquals }
+  \!\=                                                      { \s -> TNEquals }
   \&\&                                                      { \s -> TAnd }
+  \|\|                                                      { \s -> TOr }
   [a-z]($digit|$alpha)*                                     { \s -> TID s }
   ($digit+\.$digit*|$digit*\.$digit+)([eE][\-\+]?$digit+)?  { \s -> TReal (read s) }
   [\-]*[1-9]$digit*|0                                       { \s -> TInt (read s) }
@@ -81,6 +85,14 @@ data Token =
   | TRShift
   | TLRot
   | TRRot
+  | TLAngle
+  | TRAngle
+  | TLAngleEq
+  | TRAngleEq
+  | TEquals
+  | TNEquals
+  | TAnd
+  | TOr
   -- Symbols
   | TArrow
   | TLongArrow
@@ -95,10 +107,6 @@ data Token =
   | TComma
   | TDot
   | TBacktick
-  | TLAngle
-  | TRAngle
-  | TEquals
-  | TAnd
   -- identifiers & literals
   | TID String
   | TReal Double

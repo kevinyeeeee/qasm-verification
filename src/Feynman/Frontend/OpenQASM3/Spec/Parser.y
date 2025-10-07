@@ -42,12 +42,16 @@ import Feynman.Frontend.OpenQASM3.Spec
   ']'      { TRBracket }
   '<'      { TLAngle }
   '>'      { TRAngle }
+  leq      { TLAngleEq }
+  req      { TRAngleEq }
   '|'      { TBar }
   ':'      { TColon }
   ','      { TComma }
   '.'      { TDot }
   '='      { TEquals }
+  neq      { TNEquals }
   '&'      { TAnd }
+  or       { TOr }
   '`'      { TBacktick }
   id       { TID   $$ }
   real     { TReal $$ }
@@ -55,9 +59,12 @@ import Feynman.Frontend.OpenQASM3.Spec
 
 %%
 
-type : bit               { Bit }
-     | bit '[' expr ']'  { Reg $3 }
-     | uint '[' expr ']' { Reg $3 }
+type : basetype '|' expr  { Refined $1 $3 }
+     | basetype           { $1 }
+
+basetype : bit               { Bit }
+         | bit '[' expr ']'  { Reg $3 }
+         | uint '[' expr ']' { Reg $3 }
 
 assertions : assertion                { [$1] }
            | assertions '&' assertion { $1 ++ [$3] }
@@ -71,15 +78,25 @@ sexpr : expr                        { $1 }
       | fun decls arrow sexpr       { Fun $2 $4 }
       | sum '{' decls '}' '.' sexpr { Sum $3 $6 }
 
-expr : term          { $1 }
-     | expr '+' term { BExp $1 Plus $3 }
-     | expr '-' term { BExp $1 Minus $3 }
-     | expr '%' term { BExp $1 Mod $3 }
+expr : expr1          { $1 }
+     | expr '=' expr1 { BExp $1 Equal $3 }
+     | expr neq expr1 { BExp $1 NEqual $3 }
+     | expr '<' expr1 { BExp $1 LessThan $3 }
+     | expr leq expr1 { BExp $1 LessEq $3 }
+     | expr '>' expr1 { BExp $1 GreaterThan $3 }
+     | expr geq expr1 { BExp $1 GreaterEq $3 }
+
+expr1 : term          { $1 }
+     | expr1 '+' term { BExp $1 Plus $3 }
+     | expr1 '-' term { BExp $1 Minus $3 }
+     | expr1 '%' term { BExp $1 Mod $3 }
+     | expr1 or term { BExp $1 Or $3 }
 
 term : factor          { $1 }
      | term '*' factor { BExp $1 Times $3 }
      | term '/' factor { BExp $1 Div $3 }
      | term '^' factor { BExp $1 Pow $3 }
+     | term '&' factor { BExp $1 And $3 }
 
 factor : appl               { $1 } 
        | factor lshift appl { BExp $1 LShift $3 }
