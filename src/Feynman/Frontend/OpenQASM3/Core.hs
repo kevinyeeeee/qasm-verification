@@ -150,6 +150,11 @@ data Prog a = Prog Version [Stmt a] deriving (Show)
 
 {- Utilities -}
 
+instance Eq (AccessPath a) where
+  (==) (AVar id1) (AVar id2) = id1 == id2
+  (==) (AIndex id1 (EInt i1)) (AIndex id2 (EInt i2)) = id1 == id2 && i1 == i2
+  (==) _ _ = False
+
 -- | Gets the identifier being declared
 declID :: Decl a -> ID
 declID decl = case decl of
@@ -583,6 +588,7 @@ translateUOp token = case token of
   S.MinusToken                -> return UMinusOp
   S.TildeToken                -> return NegOp
   S.ExclamationPointToken     -> return NegOp
+  S.PopcountToken             -> return PopcountOp
 
 -- | Translation of binary operators
 translateBOp :: S.Token -> Either ErrMsg BinOp

@@ -658,6 +658,13 @@ traceOut i j sop@(Pathsum s d o p pp ovals) = sop .> embed epsilon (o-2) mp (\_ 
   mp 0 = i
   mp 1 = j
 
+applyReset :: (Eq g, Abelian g, Dyadic g) => Int -> Int -> Pathsum g -> Pathsum g
+applyReset i j (Pathsum s d o p pp ovals) = Pathsum (s+2) d o (p+1) pp' ovals' where
+  pp'         = pp + (lift $ y * (ovals!!i + ovals!!j))
+  y           = ofVar $ PVar p
+  ovals'      = resetAt j . resetAt i $ ovals
+  resetAt k l = take k l ++ [0] ++ drop (k+1) l
+  
 {----------------------------
  Bind, unbind, and subst
  ----------------------------}

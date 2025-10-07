@@ -10,9 +10,9 @@ import Feynman.Algebra.SArith
 import Feynman.Algebra.Pathsum.Balanced
 import Feynman.Core (ID)
 import Feynman.Frontend.OpenQASM3.Core
-import Feynman.Algebra.Polynomial.Multilinear (SBool, ofVar)
+import Feynman.Algebra.Polynomial.Multilinear (SBool, ofVar, rename)
 import Data.Bits (testBit, xor, (.>>.), (.&.))
-import Data.Complex (realPart, imagPart)
+import Data.Complex
 
 import qualified Feynman.Util.Unicode as U
 
@@ -28,6 +28,19 @@ data Binding a =
   | Scalar { typ :: Type a, value :: Expr a }
   | Block { typ :: Type a, params :: [(ID, Type a)], returns :: Maybe (Type a), body :: Stmt a }
   deriving (Show)
+
+data Value =
+    VInt Int
+  | VPi
+  | VIm
+  | VBool Bool
+  | VList [Value]
+  | VFloat Double
+  | VCmplx (Complex Double)
+  | VOffset Int
+  | VRange Int Int -- offset, size
+  | VPoly (SBool Var)
+  | VPolyList [SBool Var]
 
 getQWidth :: State (Env a) Int
 getQWidth = gets qwidth
@@ -97,6 +110,15 @@ allocatePathsum v size init = do
         newps    = ket (qbits ++ qbits) .> embedded
 -}
 
+renameFVar :: Var -> Var
+renameFVar v = case v of
+  FVar s -> FVar $ "'" ++ s
+  _      -> v
+
+renameKet :: Pathsum DMod2 -> Pathsum DMod2
+renameKet ps@(Pathsum _ _ _ _ _ o) =
+  ps { outVals = map (rename renameFVar) o }
+
 -- TODO: size redundant if list given. replace with Either?
 allocateQBits :: ID -> Int -> Maybe [SBool String] -> State (Env a) Int
 allocateQBits v size init = do
@@ -105,11 +127,26 @@ allocateQBits v size init = do
   return $ offset 
   where
     qbits                              = case init of
-      Nothing   -> ket $ [ofVar (varOfOffset v i) | i <- [0..size-1]]
-      Just list -> ket $ list
+      Nothing   -> ket [ofVar (varOfOffset v i) | i <- [0..size-1]]
+      Just list -> ket list
     qbits'                             = case init of
-      Nothing   -> ket $ [ofVar (varOfOffset ("'" ++ v) i) | i <- [0..size-1]]
-      Just list -> ket $ list
+      Nothing   -> renameKet $ ket [ofVar (varOfOffset v i) | i <- [0..size-1]]
+      Just list -> renameKet (ket list)
+    allocateQ env@(Env ps _ density w) = env { pathsum = newPs, qwidth = w + size }
+      where
+        psSize   = outDeg ps
+        newOuts  = if density then qbits <> qbits' else qbits
+        embedded = embed newOuts psSize (\i -> i) (\i -> if i < size then i + w else i + 2*w)
+        newPs    = ps .> embedded
+
+allocateQType :: ID -> Pathsum DMod2 -> State (Env a) Int
+allocateQType v qbits = do
+  offset <- getQWidth
+  modify $ allocateQ
+  return $ offset 
+  where
+    qbits' = renameKet qbits
+    size   = length (outVals qbits)
     allocateQ env@(Env ps _ density w) = env { pathsum = newPs, qwidth = w + size }
       where
         psSize   = outDeg ps
@@ -126,6 +163,18 @@ allocateCBits v size init = do
     bits                                 = case init of
       Nothing   -> ket $ [ofVar (varOfOffset v i) | i <- [0..size-1]]
       Just list -> ket $ list
+    allocateC env@(Env ps _ density w) = env { pathsum = newPs }
+      where
+        psSize   = outDeg ps
+        embedded = embed bits psSize (\i -> i) (\i -> i + psSize)
+        newPs    = ps .> embedded
+
+allocateCType :: ID -> Pathsum DMod2 -> State (Env a) Int
+allocateCType v bits = do
+  offset <- getCWidth
+  modify $ allocateC
+  return $ offset 
+  where
     allocateC env@(Env ps _ density w) = env { pathsum = newPs }
       where
         psSize   = outDeg ps
@@ -187,18 +236,6 @@ popEnv :: State (Env a) ()
 popEnv =
   modify $ \env -> env { binds = tail $ binds env }
 
-isValue :: Expr a -> Bool
-isValue expr = case expr of
-  EInt _   -> True
-  EFloat _ -> True 
-  ECmplx _ -> True
-  EPi      -> True 
-  EIm      -> True
-  EBool _  -> True
-  EStmt _  -> True
-  ESet l   -> List.all isValue l
-  EIndex x i -> isValue x && isValue i 
-
 reduceExpr :: Expr a -> State (Env a) (Expr a)
 reduceExpr expr = case expr of
   EInt _     -> return expr
@@ -250,7 +287,8 @@ reduceExpr expr = case expr of
       (ImOp      , _       ) -> return $ EFloat 0.0              --maybe need to check type of e
       (NegOp     , _       ) -> error "TODO: need to clarify difference between neg and uminus"
       (UMinusOp  , _       ) -> error "TODO: need to clarify difference between neg and uminus"
-      (PopcountOp, _       ) -> error "TODO"
+--      (PopcountOp, _       ) -> error "TODO"
+      _                      -> return $ EUOp uop a
   EBOp a bop b -> do
     e1 <- reduceExpr a
     e2 <- reduceExpr b
@@ -290,6 +328,7 @@ reduceExpr expr = case expr of
       (ModOp   , EInt i1  , EInt i2  ) -> return $ EInt $ i1 `mod` i2
       (PowOp   , EInt i1  , EInt i2  ) -> return $ EInt $ i1 ^ i2
       _                                -> return $ EBOp e1 bop e2    
+  _ -> return $ expr
       
 floatOf :: Expr a -> Double
 floatOf expr = case expr of
@@ -394,10 +433,102 @@ simStmt p stmt = case stmt of
                                   error "invalid stmt in symbolic branch"
   SAssign _ path bop expr    -> simAssign p path bop expr >> return Nothing
 
-  SAnnotated _ _ stmt        -> simStmt p stmt
+  SAnnotated _ annots stmt   -> simAnnotated p annots stmt
   SFor _ (id, typ) expr stmt -> simFor p (id, typ) expr stmt
   SReturn _ e                -> liftM Just $ reduceExpr e
   SExpr _ expr               -> simExpr p expr >> return Nothing
+
+simAnnotated :: SBool Var -> [Annotation a] -> Stmt a -> State (Env a) (Maybe (Expr a))
+simAnnotated p annots stmt = case stmt of
+  SDeclare _ decl@(DDef _ params _ body) -> do
+    verifyDef pre post params body
+    simDeclare decl
+    return Nothing
+  _               -> simStmt p stmt
+  where
+    pre = case List.find (\a -> case a of
+      Pre _ -> True
+      _     -> False ) annots of
+        Just (Pre l) -> l
+        _            -> []
+    post = case List.find (\a -> case a of
+      Post _ -> True
+      _     -> False ) annots of
+        Just (Post l) -> l
+        _            -> []
+
+verifyDef :: [(AccessPath a, Expr a)] -> [(AccessPath a, Expr a)] -> [(ID, Type a)] -> Stmt a -> State (Env a) ()
+verifyDef pre post binds body = do
+  preState <- setUpPre
+  let env@(Env ps binds density qwidth) = execState (simStmt 1 body) preState
+  if checkPost env then
+    return ()
+  else
+    error "verification failed"
+  where
+    setUpPre = return $ execState (g pre) (initEnv True)
+    g conds  = forM binds (\(id, typ) -> do
+        initKet <- z conds (AVar id, typ)
+        declareWithPS id typ initKet
+        )
+
+    z conds (path, typ) = case typ of
+      TQBit -> case lookup path conds of
+        Just e  -> simKet e
+        Nothing -> case path of
+          AVar vid            -> return $ ket [ofVar vid]
+          AIndex vid (EInt i) -> return $ ket [ofVar (varOfOffset vid i)]
+      TCBit -> case lookup path conds of
+        Just e  -> simKet e
+        Nothing -> case path of
+          AVar vid            -> return $ ket [ofVar vid]
+          AIndex vid (EInt i) -> return $ ket [ofVar (varOfOffset vid i)]
+      TQReg (EInt n) -> case path of
+        AVar id -> case lookup path conds of
+          Just e  -> simKet e
+          Nothing -> do
+            psList <- mapM (z conds) [(AIndex id (EInt i), TQBit) | i <- [0..n-1]]
+            return $ foldr1 (<>) psList
+        _ -> error "wrong access path"
+      TCReg (EInt n) -> case path of
+        AVar id -> case lookup path conds of
+          Just e  -> simKet e
+          Nothing -> do
+            psList <- mapM (z conds) [(AIndex id (EInt i), TCBit) | i <- [0..n-1]]
+            return $ foldr1 (<>) psList
+      TUInt (EInt n) -> case path of
+        AVar id -> case lookup path conds of
+          Just e  -> simKet e
+          Nothing -> do
+            psList <- mapM (z conds) [(AIndex id (EInt i), TCBit) | i <- [0..n-1]]
+            return $ foldr1 (<>) psList
+
+    checkPost (Env ps _ _ _) =
+      let (Env ps' _ _ _) = execState (g post) (initEnv True) in
+      ps == ps'
+
+simKet :: Expr a -> State (Env a) (Pathsum DMod2)
+simKet expr = case expr of
+  Tensor e1 e2          -> liftM2 (<>) (simKet e1) (simKet e2)
+  Sum svars e           -> do
+    ps <- simKet e
+    return $ sumOver svars ps  
+  Ket (EInt 0)          -> return $ ket [0]
+  Ket (EInt 1)          -> return $ ket [1]
+  Ket (EVar vid)        -> return $ ket [ ofVar vid ]
+  Ket (EVarDec vid typ) -> case typ of
+    TCBit          -> return $ ket [ ofVar vid ]
+    TCReg (EInt n) -> return $ ket [ ofVar (varOfOffset vid i) | i <- [0..n-1] ]
+    TUInt (EInt n) -> error "TODO"
+  
+sumOver :: [(ID, Maybe (Type a))] -> Pathsum DMod2 -> Pathsum DMod2
+sumOver svars ps = foldr sumVar ps svars
+  where
+    sumVar (vid, Nothing)  ps = sumVar (vid, Just TCBit) ps
+    sumVar (vid, Just typ) ps = foldr1 plus $ map (\v -> substitute [FVar vid] v ps) (domain typ)
+    domain typ                = case typ of
+      TCBit -> [0, 1]
+      _     -> error "TODO"
 
 simBlock :: SBool Var -> [Stmt a] -> State (Env a) (Maybe (Expr a))
 simBlock p = foldM f Nothing
@@ -408,13 +539,14 @@ simBlock p = foldM f Nothing
 simWhile :: SBool Var -> Expr a -> Stmt a -> State (Env a) (Maybe (Expr a))
 simWhile p cond stmt = do
   cond' <- simBool cond --symbolic branching?
-  case cond' of
-    True  -> do
-      ret <- simStmt p stmt
-      case ret of
-        Nothing -> simWhile p cond stmt
-        Just e  -> return $ Just e
-    False -> return Nothing
+  if cond' then
+    ( do
+        ret <- simStmt p stmt
+        case ret of
+          Nothing -> simWhile p cond stmt
+          Just e  -> return $ Just e )
+  else
+    return Nothing
 
 simIf :: SBool Var -> Expr a -> Stmt a -> Stmt a -> State (Env a) (Maybe (Expr a))
 simIf p cond stmtT stmtE = do
@@ -469,8 +601,9 @@ boolOpOfBop bop = case bop of
 
 listOpOfUop :: UOp -> [SBool Var] -> [SBool Var]
 listOpOfUop uop = case uop of
-  NegOp    -> sNot
-  UMinusOp -> sNeg
+  NegOp      -> sNot
+  UMinusOp   -> sNeg
+  PopcountOp -> sPopcount
   _        -> error "given uop does not output list of polynomials"
 
 exprOfPath :: AccessPath a -> Expr a
@@ -593,17 +726,29 @@ polyListOfExpr expr = case expr of
     g start len (Env (Pathsum _ _ _ _ _ out) _ False qwidth) = take len . drop (start + qwidth) $ out
     g start len (Env (Pathsum _ _ _ _ _ out) _ True  qwidth) = take len . drop (start + 2*qwidth) $ out
 
-declareSymbolic :: ID -> Type a -> Int -> Maybe [SBool String] -> State (Env a) ()
-declareSymbolic id typ size init = do
-  offset <- f id size init
+declareWithPS :: ID -> Type a -> Pathsum DMod2 -> State (Env a) ()
+declareWithPS id typ ps = do
+  offset <- f id ps
   addBinding id (Symbolic typ offset)
   where
     f = case typ of
-      TCBit   -> allocateCBits
-      TCReg _ -> allocateCBits
-      TUInt _ -> allocateCBits
-      TQBit   -> allocateQBits
-      TQReg _ -> allocateQBits
+      TCBit   -> allocateCType
+      TCReg _ -> allocateCType
+      TUInt _ -> allocateCType
+      TQBit   -> allocateQType
+      TQReg _ -> allocateQType
+
+declareSymbolic :: ID -> Type a -> Int -> Maybe [SBool String] -> State (Env a) ()
+declareSymbolic id typ size init = declareWithPS id typ ps
+  where
+    ps = case init of
+      Just s -> ket s
+      Nothing -> case typ of
+        TCBit   -> ket [ofVar id]
+        TQBit   -> ket [ofVar id]
+        TCReg _ -> ket [ofVar (varOfOffset id i) | i <- [0..size-1]]
+        TUInt _ -> ket [ofVar (varOfOffset id i) | i <- [0..size-1]]
+        TQReg _ -> ket [ofVar (varOfOffset id i) | i <- [0..size-1]]
 
 declareScalar :: ID -> Type a -> Maybe (Expr a) -> State (Env a) ()
 declareScalar id typ maybeExpr = do
@@ -776,5 +921,5 @@ simProg (Prog _ stmts) = execState (simStmts stmts) (initEnv True)
 simulationResult :: Prog a -> String
 simulationResult prog = 
   let env = simProg prog in
-    show (pathsum env)   
+    show (grind $ pathsum env)   
        
