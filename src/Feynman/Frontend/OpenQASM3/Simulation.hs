@@ -5,16 +5,19 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe (fromJust)
 import qualified Data.List as List
-import Feynman.Algebra.Base (DMod2)
+import Feynman.Algebra.Base (DMod2, DyadicRational, fromDyadic, toDyadic)
 import Feynman.Algebra.SArith
 import Feynman.Algebra.Pathsum.Balanced
 import Feynman.Core (ID)
 import Feynman.Frontend.OpenQASM3.Core
-import Feynman.Algebra.Polynomial.Multilinear (SBool, ofVar, rename)
-import Data.Bits (testBit, xor, (.>>.), (.&.))
+import Feynman.Algebra.Polynomial.Multilinear (SBool, ofVar, rename, PseudoBoolean, cast, constant)
+import Data.Bits (Bits, testBit, xor, (.>>.), (.&.))
 import Data.Complex
 
 import qualified Feynman.Util.Unicode as U
+
+isPowerOfTwo :: (Bits i, Integral i) => i -> Bool
+isPowerOfTwo n = n > 0 && (n .&. (n - 1)) == 0
 
 data Env a = Env {
   pathsum :: Pathsum DMod2,
@@ -74,6 +77,28 @@ evalOffset expr = case expr of
     index <- simInt e2
     return $ offset + index
   _ -> error "cannot find offset"
+
+offsetListOfPath :: AccessPath a -> State (Env a) [Int]
+offsetListOfPath path = case path of
+  AVar vid -> do
+    bind <- searchBinding vid
+    case bind of
+      Nothing -> error "bind not found"
+      Just b  -> case b of
+        Symbolic (TQReg (EInt n)) offset -> return [ i | i <- [offset..offset+n-1] ] 
+        Symbolic (TCReg (EInt n)) offset -> return [ i | i <- [offset..offset+n-1] ] 
+        Symbolic (TUInt (EInt n)) offset -> return [ i | i <- [offset..offset+n-1] ]
+        Symbolic TQBit            offset -> return [ offset ]
+        Symbolic TCBit            offset -> return [ offset ]
+  AIndex vid e -> do
+    e' <- reduceExpr e
+    case e' of
+      EInt i -> do
+        bind <- searchBinding vid
+        case bind of
+          Just b -> return [offset b + i]
+          Nothing -> error "binding not found"
+      _      -> error "index by non-int" 
 
 -- | Gives the unicode representation of the ith offset of v
 varOfOffset :: ID -> Int -> String
@@ -457,6 +482,9 @@ simAnnotated p annots stmt = case stmt of
         Just (Post l) -> l
         _            -> []
 
+verifyAssert :: [(AccessPath a, Expr a)] -> State (Env a) ()
+verifyAssert conds = error "TODO"
+
 verifyDef :: [(AccessPath a, Expr a)] -> [(AccessPath a, Expr a)] -> [(ID, Type a)] -> Stmt a -> State (Env a) ()
 verifyDef pre post binds body = do
   preState <- setUpPre
@@ -468,26 +496,25 @@ verifyDef pre post binds body = do
   where
     setUpPre = return $ execState (g pre) (initEnv True)
     g conds  = forM binds (\(id, typ) -> do
-        initKet <- z conds (AVar id, typ)
-        declareWithPS id typ initKet
-        )
+      initKet <- z conds (AVar id, typ)
+      declareWithPS id typ initKet )
 
     z conds (path, typ) = case typ of
       TQBit -> case lookup path conds of
         Just e  -> simKet e
         Nothing -> case path of
-          AVar vid            -> return $ ket [ofVar vid]
-          AIndex vid (EInt i) -> return $ ket [ofVar (varOfOffset vid i)]
+          AVar vid            -> return $ ket [ ofVar vid ]
+          AIndex vid (EInt i) -> return $ ket [ ofVar (varOfOffset vid i) ]
       TCBit -> case lookup path conds of
         Just e  -> simKet e
         Nothing -> case path of
-          AVar vid            -> return $ ket [ofVar vid]
-          AIndex vid (EInt i) -> return $ ket [ofVar (varOfOffset vid i)]
+          AVar vid            -> return $ ket [ ofVar vid ]
+          AIndex vid (EInt i) -> return $ ket [ ofVar (varOfOffset vid i) ]
       TQReg (EInt n) -> case path of
         AVar id -> case lookup path conds of
           Just e  -> simKet e
           Nothing -> do
-            psList <- mapM (z conds) [(AIndex id (EInt i), TQBit) | i <- [0..n-1]]
+            psList <- mapM (z conds) [ (AIndex id (EInt i), TQBit) | i <- [0..n-1] ]
             return $ foldr1 (<>) psList
         _ -> error "wrong access path"
       TCReg (EInt n) -> case path of
@@ -505,22 +532,67 @@ verifyDef pre post binds body = do
 
     checkPost (Env ps _ _ _) =
       let (Env ps' _ _ _) = execState (g post) (initEnv True) in
-      ps == ps'
+      ps ~~= ps'
 
 simKet :: Expr a -> State (Env a) (Pathsum DMod2)
 simKet expr = case expr of
   Tensor e1 e2          -> liftM2 (<>) (simKet e1) (simKet e2)
   Sum svars e           -> do
     ps <- simKet e
-    return $ sumOver svars ps  
-  Ket (EInt 0)          -> return $ ket [0]
-  Ket (EInt 1)          -> return $ ket [1]
-  Ket (EVar vid)        -> return $ ket [ ofVar vid ]
+    return $ sumOver svars ps
+  EUOp ExpOp e          -> do
+    pp <- exprToPhasePoly e
+    return $ Pathsum 0 0 0 0 pp []
   Ket (EVarDec vid typ) -> case typ of
     TCBit          -> return $ ket [ ofVar vid ]
     TCReg (EInt n) -> return $ ket [ ofVar (varOfOffset vid i) | i <- [0..n-1] ]
     TUInt (EInt n) -> error "TODO"
-  
+  Ket e                 -> liftM (ket . List.singleton) (exprToBoolPoly e)
+  EBOp e1 PlusOp e2 -> do
+    ps1 <- simKet e1
+    ps2 <- simKet e2
+    return $ plus ps1 ps2
+
+exprToDyadicPoly :: Expr a -> State (Env a) (PseudoBoolean Var DyadicRational)
+exprToDyadicPoly e = case e of
+  EBOp divi DivOp (EInt n) -> 
+    if isPowerOfTwo n then
+      do
+        pp <- exprToDyadicPoly divi
+        return $ pp * constant (toDyadic $ 1.0 / fromIntegral n)
+    else error "phase poly not dyadic"
+  EBOp e1 TimesOp e2       -> do
+    pp1 <- exprToDyadicPoly e1
+    pp2 <- exprToDyadicPoly e2
+    return $ pp1 * pp2
+  EBOp e1 PlusOp e2        -> do
+    pp1 <- exprToDyadicPoly e1
+    pp2 <- exprToDyadicPoly e2
+    return $ pp1 + pp2
+  EBOp e1 MinusOp e2       -> do
+    pp1 <- exprToDyadicPoly e1
+    pp2 <- exprToDyadicPoly e2
+    return $ pp1 - pp2
+  EInt n                   -> return $ fromInteger $ toInteger n
+  EVar id                  -> return $ ofVar (FVar id)
+
+exprToPhasePoly :: Expr a -> State (Env a) (PseudoBoolean Var DMod2)
+exprToPhasePoly = liftM (cast fromDyadic) . exprToDyadicPoly
+
+exprToBoolPoly :: Expr a -> State (Env a) (SBool String)
+exprToBoolPoly e = case e of
+  EInt 0 -> return 0
+  EInt 1 -> return 1
+  EVar vid -> return $ ofVar vid
+  EBOp e1 TimesOp e2 -> do
+    p1 <- exprToBoolPoly e1
+    p2 <- exprToBoolPoly e2
+    return $ p1 * p2
+  EBOp e1 PlusOp e2  -> do
+    p1 <- exprToBoolPoly e1
+    p2 <- exprToBoolPoly e2
+    return $ p1 + p2
+
 sumOver :: [(ID, Maybe (Type a))] -> Pathsum DMod2 -> Pathsum DMod2
 sumOver svars ps = foldr sumVar ps svars
   where
@@ -898,7 +970,6 @@ simReset expr = case expr of
       Nothing -> return ()
       Just (Symbolic TQBit offset) -> modify $ resetOffset offset
       Just (Symbolic (TQReg (EInt n)) offset) -> mapM_ modify [resetOffset i | i <- [offset..offset+n-1] ] 
-
   where
     resetOffset offset env@(Env ps@(Pathsum _ _ _ _ _ out) _ False _)     =
       env { pathsum = resetPS offset ps }
@@ -908,6 +979,30 @@ simReset expr = case expr of
     resetPS offset ps@(Pathsum _ _ _ _ _ out) = ps { outVals = newOut }
       where
         newOut = take offset out ++ [0] ++ drop (offset + 1) out 
+
+tracePaths :: [AccessPath a] -> State (Env a) (Pathsum DMod2)
+tracePaths paths = do
+  offsets <- liftM concat $ mapM offsetListOfPath paths
+  let sorted = reverse . List.sort $ offsets
+  qwidth <- getQWidth
+  ps <- gets $ pathsum
+  return $ snd $ foldr go (qwidth, ps) offsets
+  where
+    go i (w, ps) = let ps' = traceOut i (i+w) ps in
+      (w-1, ps') 
+
+traceExcept :: [AccessPath a] -> State (Env a) (Pathsum DMod2)
+traceExcept paths = do
+  offsets <- liftM concat $ mapM offsetListOfPath paths
+  qwidth <- getQWidth
+  ps <- gets $ pathsum
+  return $ snd $ foldr (go offsets) (qwidth, ps) (reverse [0..qwidth-1])
+  where
+    go skips i (w, ps) = if i `elem` skips then
+        (w, ps)
+      else
+        let ps' = traceOut i (i+w) ps in
+          (w-1, ps')
 
 simStmts :: [Stmt a] -> State (Env a) ()
 simStmts = mapM_ $ simStmt 1
