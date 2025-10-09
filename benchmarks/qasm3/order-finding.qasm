@@ -16,6 +16,7 @@ for uint i in [0:n-1] {
   if (((int(N)  >> i) & 1) == 1) { x CONST_N[i]; }
   if (((int(TN) >> i) & 1) == 1) { x CONST_TN[i]; }
 }
+
 qubit[n] control;            // allocates in |0>^n
 qubit[n] target;             // allocates in |0>^n
 x target[0];
@@ -58,30 +59,34 @@ def iqft(qubit[n] q) {
   }
 }
 
-/* Cuccaro MAJ/UMA primitives (paper Figs. 1–2) */
+@pre a=|x> && b=|y> && c=|z>
+@post a=|x*y+x*z+y*z> && b=|x+y> && c=|x+z>
 gate maj a, b, c {  // in-place majority
   cx a, b;
-  cx a, c;
-  ccx c, b, a;
+  cx a, c; 
+  ccx c, b, a;    //a=|x+(x+y)*(x+z)>
 }
 
-/* Inverse of MAJ (reverse of: cx a,b; cx a,c; ccx c,b,a) */
+@pre a=|x*y+x*z+y*z> && b=|x+y> && c=|x+z>
+@post a=|x> && b=|y> && c=|z>
 gate unmaj a, b, c {
-  ccx c, b, a;
+  ccx c, b, a;   // Inverse of MAJ
   cx  a, c;
   cx  a, b;
 }
 
+@pre a=|x*y+x*z+y*z> && b=|x+y> && c=|x+z>
+@post a=|x> && b=|x+y+z> && c=|z>
 gate uma a, b, c{  // unmajority and add (2-CNOT form)
   ccx c, b, a;
-  cx a, c;
+  cx a, c;      
   cx c, b;
 }
 
-/* Ripple-carry adder (Figure-4 pattern): 
+
+/* Ripple-carry adder 
    Inputs:  A[i]=a_i, B[i]=b_i, Z = z,       X=|0⟩
-   Outputs: A[i]=a_i, B[i]=s_i, Z = z ⊕ s_n, X =|0⟩
-   Matches: “string together MAJ and UMA” narrative next to Figs. 3–4. */
+   Outputs: A[i]=a_i, B[i]=s_i, Z = z ⊕ s_n, X =|0⟩ */
 def cuccaro(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
 
     // Forward MAJ ripple
