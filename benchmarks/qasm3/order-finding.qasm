@@ -29,7 +29,8 @@ qubit anc_3;
 //initialize classical output register
 bit[n] out=0;
 
-
+@pre  q ==  |x  :uint[n]>
+@post q ==  1/sqrt(2^n)*sum{y:uint[n]}exp(2*pi*x*y/2^n)|y>
 def qft(qubit[n] q) {
   for int i in [0:n-1] {
     h q[i];
@@ -44,6 +45,8 @@ def qft(qubit[n] q) {
   }
 }
 
+@pre   q ==  1/sqrt(2^n)*sum{y:uint[n]}exp(2*pi*(x:uint[n])*y/2^n)|y>
+@post  q ==  |x>
 def iqft(qubit[n] q) {
   for uint i in [0:n/2-1] {
     swap q[i], q[n-1-i];
@@ -58,35 +61,38 @@ def iqft(qubit[n] q) {
     h q[i_];
   }
 }
-
-@pre a=|x> && b=|y> && c=|z>
-@post a=|x*y+x*z+y*z> && b=|x+y> && c=|x+z>
+//variables inside ket are bit-variables by default, so + is XOR and * is AND
+@pre a==|x> && b==|y> && c==|z>
+@post a==|x*y+x*z+y*z> && b==|x+y> && c==|x+z>
 gate maj a, b, c {  // in-place majority
   cx a, b;
   cx a, c; 
   ccx c, b, a;    //a=|x+(x+y)*(x+z)>
 }
 
-@pre a=|x*y+x*z+y*z> && b=|x+y> && c=|x+z>
-@post a=|x> && b=|y> && c=|z>
+@pre a==|x*y+x*z+y*z> && b==|x+y> && c==|x+z>
+@post a==|x> && b==|y> && c==|z>
 gate unmaj a, b, c {
   ccx c, b, a;   // Inverse of MAJ
   cx  a, c;
   cx  a, b;
 }
 
-@pre a=|x*y+x*z+y*z> && b=|x+y> && c=|x+z>
-@post a=|x> && b=|x+y+z> && c=|z>
+@pre a==|x*y+x*z+y*z> && b==|x+y> && c==|x+z>
+@post a==|x> && b==|x+y+z> && c==|z>
 gate uma a, b, c{  // unmajority and add (2-CNOT form)
   ccx c, b, a;
   cx a, c;      
   cx c, b;
 }
 
+def carry(uint[n] a, uint[n] b)-> bit{
+  return int(a)+int(b) >= (1<<n);
+}
 
-/* Ripple-carry adder 
-   Inputs:  A[i]=a_i, B[i]=b_i, Z = z,       X=|0⟩
-   Outputs: A[i]=a_i, B[i]=s_i, Z = z ⊕ s_n, X =|0⟩ */
+//a,b are typed as uint so + is the sum rather than XOR
+@pre A==|a:uint[n]> && A==|b:uint[n]> && Z==|0> && X==|0>
+@post A==|a> && B==|a+b> && Z==|z+carry(a,b)> && X==|0>
 def cuccaro(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
 
     // Forward MAJ ripple
@@ -105,25 +111,9 @@ def cuccaro(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
     }
     uma A[0], B[0], X;
 }
-/* Same as cuccaro with no final carry */
-def cuccaro_no_carry(
-  qubit[n] A, 
-  qubit[n] B, 
-  qubit anc) {
 
-    // Forward MAJ ripple
-    maj A[0], B[0], anc;
-    for uint i in [1:n-1] {
-        maj A[i],B[i],A[i-1];
-    }
-
-    // Reverse UMA ripple
-    for uint t in [1:n-1] {
-        uint i = n - t; 
-        uma A[i], B[i], A[i-1]; 
-    }
-    uma A[0], B[0], anc;
-}
+@pre control==|c> && A==|a:uint[n]> && A==|b:uint[n]> && anc==|0>
+@post control==|c> && A==|a> && B==|a+c*b> = && anc==|0>
 def ctrl_cuccaro_no_carry(
   qubit control, 
   qubit[n] A, 
@@ -143,6 +133,9 @@ def ctrl_cuccaro_no_carry(
     }
     ctrl @ uma control, A[0], B[0], anc;
 }
+
+@pre A==|a:uint[n]> && A==|b:uint[n]> && f==|0> && anc==|0>
+@post A==|a> && B==|b> && f==|z+carry(a,b)> && anc==|0>
 def cuccaro_carry_only(qubit[n] A,    
                   qubit[n] B,      
                   qubit anc,         
@@ -159,6 +152,12 @@ def cuccaro_carry_only(qubit[n] A,
   }
   unmaj A[0], B[0], anc;
 }
+def lt(uint[n] a, uint[n] b)->bit{
+  return a<b;
+}
+
+@pre A==|a:uint[n]> && A==|b:uint[n]> && Z==|0> && X==|0>
+@post A==|a> && B==|b> && Z==|z+lt(a,b)> && X==|0>
 def sub_cuccaro_carry_only(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
 
     // Forward UMA  ripple
@@ -177,6 +176,24 @@ def sub_cuccaro_carry_only(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
     }
     inv @ uma A[0], B[0], X;
 }
+
+@pre A        ==|r  :uint[n]> 
+  && B        ==|s  :uint[n]> 
+  && CONST_N  ==|N  :uint> 
+  && CONST_TN ==|TN :uint> 
+  && anc      ==|0>
+  && f_1      ==|0>
+  && f_2      ==|0>
+  && 0<=N     && N<(1<<n) 
+  && 0<=TN    && TN<(1<<n)
+  && N+TN     ==(1<<n)
+@post A       ==|r> 
+  && B        ==|int(r)+int(s)%N> 
+  && CONST_N  ==|N> 
+  && CONST_TN ==|TN> 
+  && anc      ==|0>
+  && f_1      ==|0>
+  && f_2      ==|0>
 def add_mod_N_in_place(
   qubit[n] A,         //=|r>
   qubit[n] B,         //=|s>
@@ -195,6 +212,27 @@ def add_mod_N_in_place(
   sub_cuccaro_carry_only(A,B,anc,f_2);
 }
 
+@pre c        ==|c> 
+  && X        ==|x  :uint[n]>
+  && Y        ==|y  :uint[n]> 
+  && CONST_N  ==|N  :uint> 
+  && CONST_TN ==|TN :uint> 
+  && A        ==|0  :uint[n]>
+  && anc      ==|0>
+  && f_1      ==|0>
+  && f_2      ==|0>
+  && 0<=N     && N<(1<<n) 
+  && 0<=TN    && TN<(1<<n)
+  && N+TN     ==1<<n
+@post c       ==|c> 
+  && X        ==|x>
+  && Y        ==|(y+c*a*x)%N> 
+  && CONST_N  ==|N> 
+  && CONST_TN ==|TN> 
+  && A        ==|0>
+  && anc      ==|0>
+  && f_1      ==|0>
+  && f_2      ==|0>
 def ctrl_mul_mod_N_oo_place(
   uint[n] a, //shadows global const uint[n] a
   qubit c,
@@ -214,7 +252,7 @@ def ctrl_mul_mod_N_oo_place(
   // For each control bit X[i], conditionally add constant t to Y (mod N)
   for uint i in [0:n-1]{
 
-    // --- prepare A := X[i] * t (mask-and-add pattern)
+    //  if c==1, load A := X[i] * t (mask-and-add pattern)
     for uint j in [0:n-1] {
       if ( ((t >> j) & 1) == 1 ) {
         // Single-control load of the j-th bit of t into A[j] if X[i]=1
@@ -222,10 +260,10 @@ def ctrl_mul_mod_N_oo_place(
       }
     }
 
-    // --- unconditional modular add: Y <- Y + A (mod N)
+    //  unconditional modular add: Y <- Y + A (mod N)
     add_mod_N_in_place(A, Y, CONST_N, CONST_TN, anc, f_1, f_2);
 
-    // --- unprepare A back to |0^n>
+    //  clean A register
     for uint j in [0:n-1] {
       if ( ((t >> j) & 1) == 1 ) {
         // Single-control load of the j-th bit of t into A[j] if X[i]=1
@@ -233,7 +271,7 @@ def ctrl_mul_mod_N_oo_place(
       }
     }
 
-    // Update t <- (2*t) mod N for the next bit (schoolbook shift-add)
+    // Update t <- (2*t) mod N for the next bit
     t = (t << 1) % N;
   }
 
@@ -249,6 +287,27 @@ def mod_inv(uint a)-> uint{
   return 0;
 }
 
+@pre c        ==|c> 
+  && X        ==|x  :uint[n]>
+  && CONST_N  ==|N  :uint> 
+  && CONST_TN ==|TN :uint> 
+  && Y        ==|y  :uint[n]> 
+  && A        ==|0  :uint[n]>
+  && anc      ==|0>
+  && f_1      ==|0>
+  && f_2      ==|0>
+  && 0<=N     && N<(1<<n) 
+  && 0<=TN    && TN<(1<<n)
+  && N+TN     ==1<<n
+@post c       ==|(c*a*x)%N> 
+  && X        ==|x>
+  && CONST_N  ==|N> 
+  && CONST_TN ==|TN> 
+  && Y        ==|0> 
+  && A        ==|0>
+  && anc      ==|0>
+  && f_1      ==|0>
+  && f_2      ==|0>
 def ctrl_mul_mod_N_in_place(
   uint[n] a, //shadows global const uint[n] a
   qubit c, //shadows global const uint[n] a
