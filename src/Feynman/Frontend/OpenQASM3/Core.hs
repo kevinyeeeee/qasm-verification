@@ -46,6 +46,7 @@ data Type a = TCBit       -- Symbolic
             | TFloat
             | TCmplx
             | TProc [Type a]
+            | TRefined (Type a) (Expr a)
             deriving (Show)
 
 data AccessPath a = AVar ID
@@ -178,6 +179,7 @@ qasmToCore = translateProg
 typeFromSpec :: a -> Spec.Type -> Type a
 typeFromSpec x Spec.Bit = TCBit
 typeFromSpec x (Spec.Reg e) = TCReg (exprFromSpec x e)
+typeFromSpec x (Spec.Refined t e) = TRefined (typeFromSpec x t) (exprFromSpec x e)
 
 accessPathFromSpec :: a -> Spec.SExpr -> AccessPath a
 accessPathFromSpec x (Spec.Var i Nothing) = AVar i
@@ -213,6 +215,13 @@ exprFromSpec = efs
     bfs Spec.RShift = RShiftOp
     bfs Spec.LRot = LRotOp
     bfs Spec.RRot = RRotOp
+    bfs Spec.Equal = EqOp
+    bfs Spec.LessThan = LTOp
+    bfs Spec.LessEq = LEqOp
+    bfs Spec.GreaterThan = GTOp
+    bfs Spec.GreaterEq = GEqOp
+    bfs Spec.And = AndOp
+    bfs Spec.Or = OrOp
 
     ufs Spec.Neg = NegOp
     ufs Spec.Wt = PopcountOp

@@ -11,7 +11,7 @@ import Feynman.Algebra.Pathsum.Balanced
 import Feynman.Core (ID)
 import Feynman.Frontend.OpenQASM3.Core
 import Feynman.Algebra.Polynomial.Multilinear (SBool, ofVar, rename)
-import Data.Bits (testBit, xor, (.>>.), (.&.))
+import Data.Bits (testBit, xor, (.&.))
 import Data.Complex
 
 import qualified Feynman.Util.Unicode as U

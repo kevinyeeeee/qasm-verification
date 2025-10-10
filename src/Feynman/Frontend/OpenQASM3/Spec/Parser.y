@@ -89,7 +89,7 @@ refinement2 : refinement3        { $1 }
 
 refinement3 : '(' refinement ')' { $2 }
             | expr '=' expr      { BExp $1 Equal $3 }
-            | expr neq expr      { BExp $1 NEqual $3 }
+            | expr neq expr      { UExp Neg (BExp $1 Equal $3) }
             | expr '<' expr      { BExp $1 LessThan $3 }
             | expr leq expr      { BExp $1 LessEq $3 }
             | expr '>' expr      { BExp $1 GreaterThan $3 }
