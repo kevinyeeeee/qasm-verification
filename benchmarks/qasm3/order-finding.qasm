@@ -5,19 +5,13 @@ include "stdgates.inc";
 const uint n = 4;                     // ceil(log2(10)) = 4
 const uint N = 10;                // choose a,N coprime
 const uint[n] a = 3;
-const uint TN = (1<<n) - N;    // 2^n - N
+const uint acc = 2*n;             //the size of the control register determines the accuracy of the rational approximation.
 
 // global “constant registers”
 qubit[n] CONST_N;   // |N>
 qubit[n] CONST_TN;  // |2^n - N>
 
-//initialize “constant registers”
-for uint i in [0:n-1] {
-  if (((int(N)  >> i) & 1) == 1) { x CONST_N[i]; }
-  if (((int(TN) >> i) & 1) == 1) { x CONST_TN[i]; }
-}
-
-qubit[n] control;            // allocates in |0>^n
+qubit[acc] control;            // allocates in |0>^n
 qubit[n] target;             // allocates in |0>^n
 x target[0];
 //initialize ancilla registers
@@ -263,7 +257,7 @@ def ctrl_mul_mod_N_oo_place(
     //  unconditional modular add: Y <- Y + A (mod N)
     add_mod_N_in_place(A, Y, CONST_N, CONST_TN, anc, f_1, f_2);
 
-    //  clean A register
+    //  uncompute A register
     for uint j in [0:n-1] {
       if ( ((t >> j) & 1) == 1 ) {
         // Single-control load of the j-th bit of t into A[j] if X[i]=1
@@ -331,17 +325,60 @@ def ctrl_mul_mod_N_in_place(
 
   ctrl_mul_mod_N_oo_place((N - ainv) % N, c, X, Y, CONST_N, CONST_TN, A, anc, f_1, f_2);
 }
-//
-//ORDER-FINDING 
-//
-for uint i in [0:n-1] {
-  h control[i];
-  ctrl_mul_mod_N_in_place (a, control[i], target, CONST_N, CONST_TN, anc_reg_1, anc_reg_2,anc_1, anc_2,anc_3 );
+
+@pre control      ==|0:uint[n]> 
+  && target       ==|1:uint[n]>
+  && CONST_N      ==|0:uint[n]>
+  && CONST_TN     ==|0:uint[n]>
+  && anc_1        ==|0>
+  && anc_2        ==|0>
+  && anc_3        ==|0>
+  && 0<=N         && N<(1<<n) 
+@post 
+  (control,target)==1/sqrt(2^n)*sum{j:uint[n]}|j,(a^j)%N>
+  && CONST_N      ==|0>
+  && CONST_TN     ==|0>
+  && anc_1        ==|0>
+  && anc_2        ==|0>
+  && anc_3        ==|0>
+def order_finding_without_iqft(
+    uint acc,
+    uint[n] a, 
+    uint N,
+    qubit[acc] control,
+    qubit[n] target,
+    qubit[n] CONST_N,
+    qubit[n] CONST_TN,
+    qubit anc_1, 
+    qubit anc_2, 
+    qubit anc_3 
+  ){
+  uint TN = (1<<n) - N;    // 2^n - N
+  //initialize “constant registers”
+  for uint i in [0:n-1] {
+    if (((int(N)  >> i) & 1) == 1) { x CONST_N[i]; }
+    if (((int(TN) >> i) & 1) == 1) { x CONST_TN[i]; }
+  }
+  for uint i in [0:acc-1] {
+    h control[i];
+    ctrl_mul_mod_N_in_place (a*(1<<i), control[i], target, CONST_N, CONST_TN, anc_reg_1, anc_reg_2,anc_1, anc_2,anc_3 );
+  }
+  //reset “constant registers”
+  for uint i in [0:n-1] {
+    if (((int(N)  >> i) & 1) == 1) { x CONST_N[i]; }
+    if (((int(TN) >> i) & 1) == 1) { x CONST_TN[i]; }
+  }
 }
-//reset “constant registers”
-for uint i in [0:n-1] {
-  if (((int(N)  >> i) & 1) == 1) { x CONST_N[i]; }
-  if (((int(TN) >> i) & 1) == 1) { x CONST_TN[i]; }
-}
+order_finding_without_iqft(
+  a,
+  N,
+  control,
+  target,
+  CONST_N,
+  CONST_TN,
+  anc_1,
+  anc_2,
+  anc_3,
+);
 iqft(control);
-out =measure control;
+out=measure control;
