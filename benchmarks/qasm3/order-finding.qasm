@@ -2,7 +2,7 @@ OPENQASM 3.0;
 
 include "stdgates.inc";
 
-const uint n = 4;                     // ceil(log2(10)) = 4
+const uint n = 4;                 // ceil(log2(10)) = 4
 const uint N = 10;                // choose a,N coprime
 const uint[n] a = 3;
 const uint acc = 2*n;             //the size of the control register determines the accuracy of the rational approximation.
@@ -12,7 +12,7 @@ qubit[n] CONST_N;   // |N>
 qubit[n] CONST_TN;  // |2^n - N>
 
 qubit[acc] control;            // allocates in |0>^n
-qubit[n] target;             // allocates in |0>^n
+qubit[n] target;               // allocates in |0>^n
 x target[0];
 //initialize ancilla registers
 qubit[n] anc_reg_1;
@@ -326,14 +326,14 @@ def ctrl_mul_mod_N_in_place(
   ctrl_mul_mod_N_oo_place((N - ainv) % N, c, X, Y, CONST_N, CONST_TN, A, anc, f_1, f_2);
 }
 
-@pre control      ==|0:uint[n]> 
+@pre control      ==|0:uint[acc]> 
   && target       ==|1:uint[n]>
   && CONST_N      ==|0:uint[n]>
   && CONST_TN     ==|0:uint[n]>
   && anc_1        ==|0>
   && anc_2        ==|0>
   && anc_3        ==|0>
-  && 0<=N         && N<(1<<n) 
+  && 0<N         && N<(1<<n) 
 @post 
   (control,target)==1/sqrt(2^n)*sum{j:uint[n]}|j,(a^j)%N>
   && CONST_N      ==|0>
