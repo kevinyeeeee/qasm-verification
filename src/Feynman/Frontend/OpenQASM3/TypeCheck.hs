@@ -455,6 +455,7 @@ tcStmt stmt = case stmt of
 
   SAnnotated loc annots stmt -> do
     stmt <- tcStmt stmt
+    annots <- mapM tcAnnotation annots
     return $ SAnnotated unitTy annots stmt
 
   SPragma loc str -> return $ SPragma unitTy str
@@ -478,6 +479,8 @@ broadcast xs = case foldM go (-1) xs of
         AIndex (EType TQBit c v) var (EInt (pureType $ TUInt Nothing) i)
       _                            -> ap
       
+tcAnnotation :: Annotation Location -> TC (Annotation ElaboratedType)
+tcAnnotation = error "TODO"
 
 -- | Expression type checking
 tcExpr :: Expr Location -> TC (Expr ElaboratedType)

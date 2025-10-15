@@ -170,6 +170,7 @@ data Token
   | -- BitshiftOperator
     DoubleLessToken
   | DoubleGreaterToken
+  | PopcountToken
   | --
     ImaginaryLiteralToken String
   | BinaryIntegerLiteralToken String

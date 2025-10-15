@@ -101,6 +101,7 @@ import Feynman.Frontend.OpenQASM3.Syntax
     AT                                      { Lexeme _ AtToken }
     TILDE                                   { Lexeme _ TildeToken }
     EXCLAMATION_POINT                       { Lexeme _ ExclamationPointToken }
+    POPCOUNT                                { Lexeme _ PopcountToken }
     -- EqualityOperator
     DOUBLE_EQUALS                           { Lexeme _ DoubleEqualsToken }
     EXCLAMATION_POINT_EQUALS                { Lexeme _ ExclamationPointEqualsToken }
@@ -460,6 +461,8 @@ expression :: { ParseNode {- Expression -} }
     | EXCLAMATION_POINT expression  { mkUnaryOperatorExpr $1 $2 }
     | MINUS expression %prec UNARY_MINUS
                                     { mkUnaryOperatorExpr $1 $2 }
+    | POPCOUNT LPAREN expression RPAREN
+                                    { mkUnaryOperatorExpr $1 $3 }
     | expression indexExpr %prec RVALUE_INDEX
                                     { Node IndexExpr [$1, $2] (context $1) }
     | lvalueExpression %prec LVALUE_INDEX

@@ -155,6 +155,7 @@ OpenQASM3 :-
                                                 { makeLexeme AtToken }
 <default_mode>          "~"                     { makeLexeme TildeToken }
 <default_mode>          "!"                     { makeLexeme ExclamationPointToken }
+<default_mode>          "popcount"              { makeLexeme PopcountToken }
 <default_mode>          $inlineSpace+           ; -- { makeLexemeCat WhitespaceToken }
 <default_mode>          $newlineSpace+          ; -- { makeLexeme NewlineToken }
 -- EqualityOperator
@@ -221,7 +222,7 @@ OpenQASM3 :-
 -- used by the annotation and pragma rules.
 <eat_to_line_end>       $inlineSpace+           ;
 <eat_to_line_end>       ~[$inlineSpace] ~[$newlineSpace]* / [$newlineSpace] -- EAT_LINE_END
-                                                { makeLexemeCat RemainingLineContentToken }
+                                                { makeLexemeCat RemainingLineContentToken `andBegin` default_mode }
 <eat_to_line_end>       [$newlineSpace]         { begin default_mode }
 
 -- We need to do a little context-aware lexing when we hit a 'cal' or 'defcal'

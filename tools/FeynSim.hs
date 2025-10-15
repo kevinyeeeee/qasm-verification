@@ -77,9 +77,6 @@ run options xs = case xs of
               let xstr = parseBitstring x
               let ystr = parseBitstring y
               let sop = getSOP qc
-              lift $ putStrLn $ "Stabilizer simulation bound: " ++ show (B.stabsimBound ystr sop xstr)
-              lift $ putStrLn $ "Set cover bound: " ++ show (B.setcoverBound ystr sop xstr)
-              --return ""
               return . show $ ssimulate ystr sop xstr
   [x,z]   | extension z == "qc" -> do
               zsrc <- lift $ B.readFile z

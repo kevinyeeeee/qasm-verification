@@ -33,6 +33,8 @@ import Data.Functor.Identity
 import qualified Feynman.Util.Unicode as U
 import Feynman.Algebra.Base
 import Feynman.Algebra.Polynomial (degree)
+import Feynman.Algebra.Polynomial.Univariate (Cyclotomic, unity, constCyc)
+import qualified Feynman.Algebra.Polynomial.Univariate as Uni
 import Feynman.Algebra.Polynomial.Multilinear
 
 {-----------------------------------
@@ -93,6 +95,16 @@ isP _        = False
 isF :: Var -> Bool
 isF (FVar _) = True
 isF _        = False
+
+-- | Get the index of an input variable
+unI :: Var -> Int
+unI (IVar i) = i
+unI _        = error "Not an input variable"
+
+-- | Get the index of a path variable
+unP :: Var -> Int
+unP (PVar i) = i
+unP _        = error "Not a path variable"
 
 -- | Get the string of a free variable
 unF :: Var -> String
@@ -160,6 +172,11 @@ makeIntegral i = cast (\a -> numerator $ toRational a * toRational i)
 -- | Retrieve the internal path variables
 internalPaths :: Pathsum g -> [Var]
 internalPaths sop = [PVar i | i <- [0..pathVars sop - 1]] \\ outVars
+  where outVars = Set.toList . Set.unions . map vars $ outVals sop
+
+-- | Retrieve the external path variables
+externalPaths :: Pathsum g -> [Var]
+externalPaths sop = intersect [PVar i | i <- [0..pathVars sop - 1]] outVars
   where outVars = Set.toList . Set.unions . map vars $ outVals sop
 
 -- | Retrieve the free variables
@@ -641,6 +658,13 @@ traceOut i j sop@(Pathsum s d o p pp ovals) = sop .> embed epsilon (o-2) mp (\_ 
   mp 0 = i
   mp 1 = j
 
+applyReset :: (Eq g, Abelian g, Dyadic g) => Int -> Int -> Pathsum g -> Pathsum g
+applyReset i j (Pathsum s d o p pp ovals) = Pathsum (s+2) d o (p+1) pp' ovals' where
+  pp'         = pp + (lift $ y * (ovals!!i + ovals!!j))
+  y           = ofVar $ PVar p
+  ovals'      = resetAt j . resetAt i $ ovals
+  resetAt k l = take k l ++ [0] ++ drop (k+1) l
+  
 {----------------------------
  Bind, unbind, and subst
  ----------------------------}
@@ -657,6 +681,19 @@ bind = flip (foldl' go)
 -- | Close a path sum by binding all free variables
 close :: (Eq g, Abelian g) => Pathsum g -> Pathsum g
 close sop = bind (freeVars sop) sop
+
+-- | Sum over some collection of free variables in a path sum
+sumover :: (Foldable f, Eq g, Abelian g) => f String -> Pathsum g -> Pathsum g
+sumover = flip (foldl' go)
+  where go sop x =
+          let v = PVar $ pathVars sop in
+            sop { pathVars = (pathVars sop) + 1,
+                  phasePoly = subst (FVar x) (ofVar v) (phasePoly sop),
+                  outVals = map (subst (FVar x) (ofVar v)) (outVals sop) }
+
+-- | Close a path sum by suming ovewr all free variables
+sumAll :: (Eq g, Abelian g) => Pathsum g -> Pathsum g
+sumAll sop = sumover (freeVars sop) sop
 
 -- | Unbind (instantiate) some collection of inputs
 unbind :: (Foldable f, Eq g, Abelian g) => f Int -> Pathsum g -> Pathsum g
@@ -681,6 +718,15 @@ substitute :: (Eq g, Abelian g) => [Var] -> SBool Var -> Pathsum g -> Pathsum g
 substitute xs p (Pathsum a b c d e f) = Pathsum a b c d e' f' where
   e' = substMonomial xs p e
   f' = map (substMonomial xs p) f
+
+-- | Swaps two path variables
+swapVar :: (Eq g, Abelian g) => Int -> Int -> Pathsum g -> Pathsum g
+swapVar i j (Pathsum a b c d e f) = Pathsum a b c d e' f' where
+  e' = substMany sub e
+  f' = map (substMany sub) f
+  sub v | v == PVar i = ofVar $ PVar j
+        | v == PVar j = ofVar $ PVar i
+        | otherwise   = ofVar $ v
 
 {----------------------------
  Operators
@@ -1213,6 +1259,18 @@ abstractMono m (Pathsum a b c d e f) = Pathsum a' b c (d + 2) e' f' where
  Reduction procedures
  --------------------------}
 
+-- | Canonicalizes a path sum with respect to the Variable rule
+canonicalizeKet :: (Eq g, Abelian g) => Pathsum g -> Pathsum g
+canonicalizeKet sop = go sop 0 0 where
+  go sop i j | i >= outDeg sop   = sop
+             | j >= pathVars sop = sop
+             | otherwise         = case filter (cond j) . solveForX $ (outVals sop)!!i of
+                 []             -> go sop (i+1) j
+                 ((PVar j),p):_ ->
+                   go (swapVar i j $ applyVar (PVar j) (p + ofVar (PVar j)) sop) (i+1) (j+1)
+
+  cond j (v,p) = isP v && unP v >= j
+
 -- | Performs basic simplifications
 simplify :: (Eq g, Periodic g, Dyadic g) => Pathsum g -> Pathsum g
 simplify sop = case sop of
@@ -1248,141 +1306,41 @@ normalizeClifford sop = go $ sop .> hLayer .> hLayer where
     _                -> sop
 
 {--------------------------
- Equivalence
+ Predicates
  --------------------------}
 
 -- | Checks whether two arbitrary path sums are equal by vectorizing them
 (~~) :: (Eq g, Periodic g, Dyadic g) => Pathsum g -> Pathsum g -> Bool
-(~~) a b = grind (vectorize a) == grind (vectorize b)
+(~~) a b = f a == f b where f = canonicalizeKet . grind . vectorize
 
 -- | Checks whether two arbitrary path sums are equal up to global phase
 (~~*) :: (Eq g, Periodic g, Dyadic g) => Pathsum g -> Pathsum g -> Bool
-(~~*) a b = grind (vectorize (a <> dagger a)) == grind (vectorize (b <> dagger b))
+(~~*) a b = f a == f b where f = canonicalizeKet . grind . vectorize . (\a -> a <> dagger a)
 
-{--------------------------
- Simulation
- --------------------------}
+-- | Decision procedure for equivalence via fallback to variable expansion
+(~~=) :: Pathsum DMod2 -> Pathsum DMod2 -> Bool
+(~~=) a b = a' == b' || go a' b' where
+  a' = canonicalizeKet . grind . vectorize $ a
+  b' = canonicalizeKet . grind . vectorize $ b
 
--- | Gets the magnitude of the paths
-pathMagnitude :: RealFloat f => Pathsum g -> f
-pathMagnitude (Pathsum k _ _ _ _ _) = base**(fromIntegral $ signum (-k)) where
-  base = case k `mod` 2 of
-    0 -> fromInteger $ 1 `shiftL` (abs $ k `div` 2)
-    1 -> sqrt(2.0) * (fromInteger $ 1 `shiftL` (((abs k)-1) `div` 2))
+  go a b | a == b               = True
+         | outDeg a /= outDeg b = False
+         | outDeg a == 0        = amplitude [] a [] == amplitude [] b []
+         | otherwise            = go a0 b0 && go a1 b1 where
+             i  = chooseIndex (a <> b) `mod` outDeg a
 
--- | Gets the (global) phase of the paths
-pathPhase :: RealFloat f => Pathsum DMod2 -> Complex f
-pathPhase (Pathsum _ _ _ _ p _) =
-  let phase = unpack $ getConstant p in
-    case (numer phase, denomExp phase) of
-      (0, 0) -> 1 :+ 0
-      (1, 0) -> (-1) :+ 0
-      (1, 1) -> 0 :+ 1
-      (3, 1) -> 0 :+ (-1)
-      (1, 2) -> 1/sqrt(2) :+ 1/sqrt(2)
-      (3, 2) -> (-1)/sqrt(2) :+ 1/sqrt(2)
-      (5, 2) -> (-1)/sqrt(2) :+ (-1)/sqrt(2)
-      (7, 2) -> 1/sqrt(2) :+ (-1)/sqrt(2)
-      _      -> mkPolar 1 (pi * (fromRational . toRational $ phase))
+             p0 = identity i <> bra [0] <> identity (outDeg a - 1 - i)
+             p1 = identity i <> bra [1] <> identity (outDeg a - 1 - i)
 
--- | Gets the cofactors of some path variable
-expand :: (Eq g, Abelian g) => Pathsum g -> Var -> (Pathsum g, Pathsum g)
-expand (Pathsum a b c d e f) v@(PVar i) = (p0, p1) where
-  e0  = renameMonotonic varShift $ subst v 0 e
-  e1  = renameMonotonic varShift $ subst v 1 e
-  f0  = map (renameMonotonic varShift . subst v 0) f
-  f1  = map (renameMonotonic varShift . subst v 1) f
-  p0  = Pathsum a b c (d-1) e0 f0
-  p1  = Pathsum a b c (d-1) e1 f1
-  varShift (PVar j)
-    | j > i     = PVar $ j - 1
-    | otherwise = PVar $ j
+             a0 = grind $ a .> p0
+             a1 = grind $ a .> p1
+             b0 = grind $ b .> p0
+             b1 = grind $ b .> p1
 
--- | Simulates a pathsum on a given input
-simulate :: (RealFloat f, Show f) => Pathsum DMod2 -> [FF2] -> Map [FF2] (Complex f)
-simulate sop xs = go $ sop * ket (map constant xs)
-  where go      = go' . grind
-        go' ps  = case ps of
-          (Pathsum k 0 _ 0 p xs) ->
-            let phase     = pathPhase ps
-                magnitude = pathMagnitude ps
-            in
-              Map.singleton (map getConstant xs) ((magnitude :+ 0) * phase)
-          (Pathsum k 0 n i p xs) ->
-            let (p0, p1) = expand ps (PVar $ i-1) in
-              Map.unionWith (+) (go p0) (go p1)
-          _                      -> error "Incompatible dimensions"
-
--- | Evaluates a pathsum on a given input and output
-amplitude :: (RealFloat f, Show f) => [FF2] -> Pathsum DMod2 -> [FF2] -> Complex f
-amplitude o sop i = (simulate (bra (map constant o) * sop) i)![]
-
--- | Set cover solver
-setCover :: Ord a => [a] -> [[a]] -> [a]
-setCover u sets = go [] u sets where
-  histo sets a =
-    let indicator = map (\s -> if a `elem` s then 1 else 0) sets in
-      (foldl (+) 0 indicator, a)
-
-  go cover u []   = cover
-  go cover u sets =
-    let freqs = map (histo sets) u
-        maxV  = snd $ maximum freqs
-    in
-      go (maxV:cover) u (filter (not . (maxV `elem`)) sets)
-
--- | Gives a bound for the complexity using set-cover decomposition
-setcoverBound :: [FF2] -> Pathsum DMod2 -> [FF2] -> Int
-setcoverBound o sop i = length $ setCover u sets where
-  sop' = simplify $ ket (map constant i) .> sop .> bra (map constant o)
-  
-  order (a,x)   = denomExp (unpack a) + degree x
-
-  poly = phasePoly sop'
-
-  u = Set.toList $ vars poly
-
-  sets =
-    let f (a,x) = order (a,x) >= 3 in
-      map (\(a,x) -> Set.toList $ vars x) . filter f . toTermList $ poly
-
--- | Gives a bound for the complexity using stabilizer decompositions
-stabsimBound :: [FF2] -> Pathsum DMod2 -> [FF2] -> Int
-stabsimBound o sop i = length tStates where
-  sop' = simplify $ ket (map constant i) .> sop .> bra (map constant o)
-  
-  poly = fourier $ phasePoly sop'
-
-  tStates =
-    let f (a,x) = denomExp (unpack a) >= 2 in
-      filter f $ toTermList poly
-  
-
--- | Performs a strong simulation using set cover based methods
-ssimulate :: (RealFloat f, Show f) => [FF2] -> Pathsum DMod2 -> [FF2] -> Complex f
-ssimulate o sop i = go $ ket (map constant i) .> sop .> bra (map constant o) where
-  order (a,x)   = denomExp (unpack a) + degree x
-
-  nonCliffTms v =
-    let f (a,x) = Set.member v (vars x) && order (a,x) >= 3 in
-      length . filter f . toTermList
-
-  greedySelect p =
-    let xs = [(nonCliffTms v p, v) | v <- Set.toList (vars p)] in
-      snd . maximumBy (\a b -> compare (fst a) (fst b)) $ xs
-
-  go      = go' . simplify
-  go' sop = case sop of
-    (Pathsum k 0 0 0 p []) ->
-      let phase     = pathPhase sop
-          magnitude = (pathMagnitude sop) :+ 0
-      in
-        magnitude * phase
-    (Pathsum k 0 0 n p []) ->
-      let v       = greedySelect p
-          (p0,p1) = expand sop v
-      in
-        (go p0) + (go p1)
+  -- TODO: use set cover solver to find an output to expand which will reduce the
+  -- most high degree terms
+  chooseIndex _ = 0
+             
 
 -- | Checks identity by checking inputs iteratively
 isIdentity :: (Eq g, Periodic g, Dyadic g) => Pathsum g -> Bool
@@ -1401,6 +1359,100 @@ isPure sop
   | inDeg sop /= outDeg sop = False
   | otherwise               = purity == identity 0 where
       purity = grind $ trace $ sop .> sop
+
+-- | Checks whether a state containing free variables forms an orthonormal basis
+isOrthonormal :: (Eq g, Periodic g, Dyadic g) => Pathsum g -> Bool
+isOrthonormal sop
+  | inDeg sop /= 0 = error "isOrthonormal: input is not a state"
+  | otherwise      = (grind $ p * p) == p where p = sumAll $ (dagger sop) .> sop
+
+{--------------------------
+ Simulation
+ --------------------------}
+
+-- | Gets the magnitude of the paths
+pathMagnitude :: Pathsum DMod2 -> Cyclotomic DyadicRational
+pathMagnitude (Pathsum k _ _ _ _ _) = go k where
+  go k | k `mod` 2 == 1 = (unity 8 1 + unity 8 7) * go (k+1)
+       | k <= 0         = constCyc $ dyadic (1 `shiftL` (abs k `div` 2)) 0
+       | otherwise      = constCyc $ dyadic 1 (k `div` 2)
+
+-- | Gets the (global) phase of the paths
+pathPhase :: Pathsum DMod2 -> Cyclotomic DyadicRational
+pathPhase (Pathsum _ _ _ _ p _) = unity (1 `shiftL` (denomExp c + 1)) (numer c) where
+  c = unpack . getConstant $ p
+
+-- | Gets the cofactors of some path variable
+expand :: (Eq g, Abelian g) => Pathsum g -> Var -> (Pathsum g, Pathsum g)
+expand (Pathsum a b c d e f) v@(PVar i) = (p0, p1) where
+  e0  = renameMonotonic varShift $ subst v 0 e
+  e1  = renameMonotonic varShift $ subst v 1 e
+  f0  = map (renameMonotonic varShift . subst v 0) f
+  f1  = map (renameMonotonic varShift . subst v 1) f
+  p0  = Pathsum a b c (d-1) e0 f0
+  p1  = Pathsum a b c (d-1) e1 f1
+  varShift (PVar j)
+    | j > i     = PVar $ j - 1
+    | otherwise = PVar $ j
+
+-- | Simulates a pathsum on a given input
+simulate :: Pathsum DMod2 -> [FF2] -> Map [FF2] (Cyclotomic DyadicRational)
+simulate sop xs = go $ sop * ket (map constant xs)
+  where go      = go' . grind
+        go' ps  = case ps of
+          (Pathsum k 0 _ 0 p xs) ->
+            let phase     = pathPhase ps
+                magnitude = pathMagnitude ps
+            in
+              Map.singleton (map getConstant xs) (magnitude * phase)
+          (Pathsum k 0 n i p xs) ->
+            let (p0, p1) = expand ps (PVar $ i-1) in
+              Map.unionWith (+) (go p0) (go p1)
+          _                      -> error "Incompatible dimensions"
+
+-- | Evaluates a pathsum on a given input and output
+amplitude :: [FF2] -> Pathsum DMod2 -> [FF2] -> Cyclotomic DyadicRational
+amplitude o sop i = (simulate (bra (map constant o) * sop) i)![]
+
+-- | Set cover solver
+setCover :: Ord a => [a] -> [[a]] -> [a]
+setCover u sets = go [] u sets where
+  histo sets a =
+    let indicator = map (\s -> if a `elem` s then 1 else 0) sets in
+      (foldl (+) 0 indicator, a)
+
+  go cover u []   = cover
+  go cover u sets =
+    let freqs = map (histo sets) u
+        maxV  = snd $ maximum freqs
+    in
+      go (maxV:cover) u (filter (not . (maxV `elem`)) sets)
+
+-- | Performs a strong simulation using set cover based methods
+ssimulate :: [FF2] -> Pathsum DMod2 -> [FF2] -> Cyclotomic DyadicRational
+ssimulate o sop i = go $ ket (map constant i) .> sop .> bra (map constant o) where
+  order (a,x)   = denomExp (unpack a) + degree x
+
+  nonCliffTms v =
+    let f (a,x) = Set.member v (vars x) && order (a,x) >= 3 in
+      length . filter f . toTermList
+
+  greedySelect p =
+    let xs = [(nonCliffTms v p, v) | v <- Set.toList (vars p)] in
+      snd . maximumBy (\a b -> compare (fst a) (fst b)) $ xs
+
+  go      = go' . simplify
+  go' sop = case sop of
+    (Pathsum k 0 0 0 p []) ->
+      let phase     = pathPhase sop
+          magnitude = pathMagnitude sop
+      in
+        magnitude * phase
+    (Pathsum k 0 0 n p []) ->
+      let v       = greedySelect p
+          (p0,p1) = expand sop v
+      in
+        (go p0) + (go p1)
 
 {--------------------------
  Testing
@@ -1544,83 +1596,32 @@ cliffordT13_is_identity () = case isIdentity reducedSOP of
 -- | Relation 14 from Bian and Selinger's presentation of the 2-qubit Clifford+T group
 cliffordT14 :: Pathsum DMod2
 cliffordT14 =
-  x1 .>
-  cxgate .>
-  x1 .>
+  nch .>
   t2 .>
-  h2 .>
-  t2 .>
-  h2 .>
-  tdg2 .>
-  cxgate .>
-  sdg1 .>
-  t2 .>
-  h1 .>
-  h2 .>
-  tdg1 .>
-  s2 .>
-  tdg2 .>
-  x2 .>
-  xcgate .>
-  x2 .>
+  ch .>
+  hnc .>
   t1 .>
-  h1 .>
-  t1 .>
-  h1 .>
-  tdg1 .>
-  xcgate .>
-  t1 .>
-  t2 .>
-  h1 .>
-  sdg2 .>
-  s1 .>
-  h2 .>
-  tdg1 .>
-  tdg2 .>
-  cxgate .>
-  t2 .>
-  h2 .>
-  tdg2 .>
-  h2 .>
-  tdg2 .>
-  x1 .>
-  cxgate .>
-  x1 .>
-  t2 .>
-  t1 .>
-  h2 .>
-  sdg1 .>
-  s2 .>
-  h1 .>
-  tdg1 .>
-  xcgate .>
-  t1 .>
-  h1 .>
-  tdg1 .>
-  h1 .>
-  tdg1 .>
-  x2 .>
-  xcgate .>
-  x2 .>
-  t1 .>
-  h1 .>
-  sdg2 .>
-  s1 .>
-  h2 .>
-  tdg2
-  where x1 = xgate <> identity 1
-        x2 = identity 1 <> xgate
-        h1 = hgate <> identity 1
-        h2 = identity 1 <> hgate
-        t1 = tgate <> identity 1
-        t2 = identity 1 <> tgate
-        s1 = sgate <> identity 1
-        s2 = identity 1 <> sgate
-        tdg1 = tdggate <> identity 1
-        tdg2 = identity 1 <> tdggate
-        sdg1 = sdggate <> identity 1
-        sdg2 = identity 1 <> sdggate
-        xcgate = swapgate .> cxgate .> swapgate
+  hc .>
+  dagger ch .>
+  dagger t2 .>
+  dagger nch .>
+  dagger hc .>
+  dagger t1 .>
+  dagger hnc
+  where ch  = s2 .>
+              h2 .>
+              t2 .>
+              cxgate .>
+              dagger t2 .>
+              h2 .>
+              dagger s2
+        nch = ch .> h2
+        hc  = swapgate .> ch .> swapgate
+        hnc = swapgate .> nch .> swapgate
+        h2  = identity 1 <> hgate
+        t1  = tgate <> identity 1
+        t2  = identity 1 <> tgate
+        s2  = identity 1 <> sgate
 
 -- | Body of an RUS circuit
 rus :: Pathsum DMod2

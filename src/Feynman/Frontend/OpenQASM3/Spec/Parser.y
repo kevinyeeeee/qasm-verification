@@ -2,6 +2,7 @@
   module Feynman.Frontend.OpenQASM3.Spec.Parser(parseAssertion,parseSExpr) where
 
 import Feynman.Frontend.OpenQASM3.Spec.Lexer
+import qualified Feynman.Frontend.OpenQASM3.Spec.Lexer as L
 import Feynman.Frontend.OpenQASM3.Spec
 }
 
@@ -64,6 +65,7 @@ assertions : assertion                { [$1] }
 assertion : sexprs '=' sexprs { Equals $1 $3 }
 
 sexprs : sexpr            { $1 }
+       | '(' sexprs ')'    { $2 }
        | sexprs ',' sexpr { Tensor $1 $3 }
 
 sexpr : expr                        { $1 }
@@ -71,7 +73,7 @@ sexpr : expr                        { $1 }
       | sum '{' decls '}' '.' sexpr { Sum $3 $6 }
 
 expr : term          { $1 }
-     | expr '+' term { BExp $1 Plus $3 }
+     | expr '+' sexprs { BExp $1 Plus $3 }
      | expr '-' term { BExp $1 Minus $3 }
      | expr '%' term { BExp $1 Mod $3 }
 

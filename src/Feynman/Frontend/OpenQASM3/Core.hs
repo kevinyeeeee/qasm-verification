@@ -19,13 +19,24 @@ import Data.Maybe
 
 import Feynman.Core (ID)
 import qualified Feynman.Frontend.OpenQASM3.Syntax as S
-  
+import qualified Feynman.Frontend.OpenQASM3.Spec.Parser as SpecParser
+import qualified Feynman.Frontend.OpenQASM3.Spec.Lexer as SpecLexer
+import qualified Feynman.Frontend.OpenQASM3.Spec as Spec
+
 {- Translation errors -}
 data ErrMsg = Err String deriving Show
 
 {- Convenience types -}
 type Location   = S.SourceRef
-type Annotation = String
+
+data Annotation a = 
+      Other (String,String)
+    | Assert [(AccessPath a,Expr a)]
+    | Fn (Expr a,Expr a)
+    | Pre [(AccessPath a,Expr a)]
+    | Post [(AccessPath a,Expr a)]
+  deriving (Show)
+
 type Version    = (Int, Maybe Int)
 
 {- Core AST -}
@@ -201,6 +212,14 @@ data Expr a = EVar a ID
             | EBOp a (Expr a) BinOp (Expr a)
             | EStmt a (Stmt a)
             | ECast a (TypeExpr a) (Expr a)
+            -- Spec only sum-over-path expresions
+            | EVarDec ID (TypeExpr a)
+            | Ket (Expr a)
+            | Fun [(ID,Maybe (TypeExpr a))] (Expr a)
+            | Sum [(ID,Maybe (TypeExpr a))] (Expr a)
+            | Tensor (Expr a) (Expr a)
+            | Compose (Expr a) (Expr a)
+            | Dagger (Expr a)
             deriving (Show)
 
 instance Annotated Expr where
@@ -249,7 +268,7 @@ data Stmt a =
   | SReset a (Expr a)
   | SReturn a (Maybe (Expr a))
   | SWhile a (Expr a) (Stmt a)
-  | SAnnotated a [Annotation] (Stmt a)
+  | SAnnotated a [Annotation a] (Stmt a)
   | SPragma a String
   deriving (Show)
 
@@ -307,8 +326,11 @@ prettyPrintStmt stmt = case stmt of
   SReturn _ mexpr -> ["return " ++ (maybe "" prettyPrintExpr mexpr) ++ ";"] 
   SWhile _ expr stmt -> ["while (" ++ prettyPrintExpr expr ++ ") {"] ++ body ++ ["}"] where
     body = map ("  " ++) $ prettyPrintStmt stmt
-  SAnnotated _ annots stmt -> map ("@" ++) annots ++ prettyPrintStmt stmt
+  SAnnotated _ annots stmt -> map prettyPrintAnnotation annots ++ prettyPrintStmt stmt
   SPragma _ str -> ["pragma " ++ str]
+
+prettyPrintAnnotation :: Annotation a -> String
+prettyPrintAnnotation = error "TODO"
 
 -- | Pretty prints a declaration
 prettyPrintDecl :: Decl a -> [String]
@@ -434,6 +456,50 @@ prettyPrintType typ = case typ of
 qasmToCore :: S.ParseNode -> Either ErrMsg (Prog Location)
 qasmToCore = translateProg
 
+typeFromSpec :: a -> Spec.Type -> TypeExpr a
+typeFromSpec x Spec.Bit = TBool
+typeFromSpec x (Spec.Reg e) = TCReg (exprFromSpec x e)
+
+accessPathFromSpec :: a -> Spec.SExpr -> AccessPath a
+accessPathFromSpec x (Spec.Var i Nothing) = AVar x i
+accessPathFromSpec x (Spec.Var i (Just e')) = AIndex x i (exprFromSpec x e')
+
+exprFromSpec :: a -> Spec.SExpr -> Expr a
+exprFromSpec = efs
+  where
+    efs x (Spec.Var i Nothing) = EVar x i
+    efs x (Spec.Var i (Just e')) = EIndex x (EVar x i) (efs x e')
+    efs x (Spec.VarDec i t) = EVarDec i (typeFromSpec x t)
+    efs x (Spec.ILit i) = EInt x i
+    efs x (Spec.RLit r) = EFloat x r
+    efs x (Spec.Pi) = EPi x
+    efs x (Spec.BExp e1 b e2) = EBOp x (efs x e1) (bfs b) (efs x e2)
+    efs x (Spec.UExp u e') = EUOp x (ufs u) (efs x e')
+    efs x (Spec.Ket e') = Ket (efs x e')
+    efs x (Spec.Fun bindings e') = 
+      Fun (fmap (\(i,mt) -> (i,fmap (typeFromSpec x) mt)) bindings) (efs x e')
+    efs x (Spec.Sum bindings e') = 
+      Sum (fmap (\(i,mt) -> (i,fmap (typeFromSpec x) mt)) bindings) (efs x e')
+    efs x (Spec.Tensor e1 e2) = Tensor (efs x e1) (efs x e2)
+    efs x (Spec.Compose e1 e2) = Compose (efs x e1) (efs x e2)
+    efs x (Spec.Dagger e') = Dagger (efs x e')
+
+    bfs Spec.Plus = PlusOp
+    bfs Spec.Minus = MinusOp
+    bfs Spec.Times = TimesOp
+    bfs Spec.Div = DivOp
+    bfs Spec.Mod = ModOp
+    bfs Spec.Pow = PowOp
+    bfs Spec.LShift = LShiftOp
+    bfs Spec.RShift = RShiftOp
+    bfs Spec.LRot = LRotOp
+    bfs Spec.RRot = RRotOp
+
+    ufs Spec.Neg = NegOp
+    ufs Spec.Wt = PopcountOp
+    ufs Spec.Exp = ExpOp
+    ufs Spec.Sqrt = SqrtOp
+
 -- | Top-level translation
 translateProg :: S.ParseNode -> Either ErrMsg (Prog Location)
 translateProg node = case node of
@@ -506,6 +572,13 @@ translateAccessPath node = case node of
     case idxs of
       [idx] -> return $ AIndex c id idx
       _     -> Left (Err "Array types unsupported")
+
+  S.Node S.IndexExpr [idnode, idxlist] c -> do
+    id   <- translateIdent idnode
+    idxs <- inLst translateExpr idxlist
+    case idxs of
+      [idx] -> return $ AIndex c id idx
+      _     -> Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Multiple indices unsupported")
 
   _  -> Left (Err $ "Fatal: malformed access path node (" ++ show node ++ ")")
 
@@ -617,10 +690,24 @@ translateModifier node = case node of
   _  -> Left (Err $ "Fatal: malformed modifier node (" ++ show node ++ ")")
 
 -- | Translation of Annotations
-translateAnnotation :: S.ParseNode -> Either ErrMsg Annotation
+translateAnnotation :: S.ParseNode -> Either ErrMsg (Annotation S.SourceRef)
 translateAnnotation node = case node of
-  S.Node (S.Annotation _ str _) [] c -> return str
+  S.Node (S.Annotation "assert" str _) [] c -> 
+    let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
+    Right (Assert (translateAssertions c assertions))
+  S.Node (S.Annotation "fn" str _) [] c -> return (Fn (error "TODO"))
+  S.Node (S.Annotation "pre" str _) [] c -> 
+    let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
+    Right (Pre (translateAssertions c assertions))
+  S.Node (S.Annotation "post" str _) [] c ->
+    let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
+    Right (Post (translateAssertions c assertions))
+  S.Node (S.Annotation a str _) [] c -> return (Other (a,str))
   _  -> Left (Err $ "Fatal: malformed annotation node (" ++ show node ++ ")")
+  where 
+    translateAssertions c assertions = 
+      fmap (\(Spec.Equals e1 e2) -> (accessPathFromSpec c e1,exprFromSpec c e2)) assertions
+
 
 -- | Translation of Arguments
 translateArg :: S.ParseNode -> Either ErrMsg (ID, TypeExpr Location)
@@ -812,6 +899,7 @@ translateUOp token = case token of
   S.MinusToken                -> return UMinusOp
   S.TildeToken                -> return NegOp
   S.ExclamationPointToken     -> return NegOp
+  S.PopcountToken             -> return PopcountOp
 
 -- | Translation of binary operators
 translateBOp :: S.Token -> Either ErrMsg BinOp
@@ -835,6 +923,7 @@ translateBOp token = case token of
   S.DoubleLessToken             -> return LShiftOp
   S.DoubleGreaterToken          -> return RShiftOp
   S.ExclamationPointEqualsToken -> return NEqOp
+  S.DoubleEqualsToken           -> return EqOp
   _                             -> error $ "Unexpected operator token " ++ show token
 
 -- | Translation of compound assignment operators
