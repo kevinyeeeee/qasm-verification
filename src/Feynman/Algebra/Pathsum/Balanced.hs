@@ -21,7 +21,7 @@ import qualified Data.Set as Set
 import Data.Ratio
 import Data.Semigroup
 import Control.Monad (mzero, msum)
-import Data.Maybe (maybeToList)
+import Data.Maybe (maybeToList,mapMaybe,fromJust)
 import Data.Complex (Complex(..), mkPolar)
 import Data.Bits (shiftL)
 import Data.Map (Map, (!))
@@ -29,6 +29,7 @@ import qualified Data.Map as Map
 import Data.String (IsString(..))
 import Data.Tuple (swap)
 import Data.Functor.Identity
+import qualified Data.Partition as Partition
 
 import qualified Feynman.Util.Unicode as U
 import Feynman.Algebra.Base
@@ -1367,6 +1368,73 @@ isOrthonormal sop
   | inDeg sop /= 0 = error "isOrthonormal: input is not a state"
   | otherwise      = (grind $ p * p) == p where p = sumAll $ (dagger sop) .> sop
 
+{--------------------------
+ Separation
+ --------------------------}
+
+-- | Computes the variable correlations in a path sum
+correlations :: Pathsum g -> Partition.Partition Var
+correlations sop = Partition.fromSets $ pCorrs ++ kCorrs where
+  pCorrs = map vars (support $ phasePoly sop)
+  kCorrs = map go $ zip (outVals sop) [0..] where
+    go (f,i) = Set.insert (FVar ("_" ++ show i)) $ vars f
+
+-- | Factor a pathsum into a tensor product of separable factors
+--
+--   The algorithm is relatively slow as it uses a slow implementation
+--   of union find under the hood, then later reconstructs the tensor
+--   factors based on the disjoint set of variables.
+separate :: (Eq g, Num g) => Pathsum g -> [([Int], [Int], Pathsum g)]
+separate sop = go (phasePoly sop) (zip [0..] $ outVals sop)  where
+
+  -- Variable partition
+  corr = correlations sop
+
+  -- Split a phase polynomial by a set of variables
+  split part = partition (\(_,m) -> not (Set.disjoint part $ vars m))
+
+  -- Check if a variable is an output var, and if so return its number
+  unO :: Var -> Maybe Int
+  unO (FVar ('_':i)) = Just $ read i
+  unO _              = Nothing
+
+  -- Main algorithm
+  go p [] =
+    let np = Set.size . Set.filter (isP) . vars $ p in
+      [([], [], Pathsum np 0 0 np p [])]
+
+  go p ((i,x):xs) =
+    let part     = Partition.find corr (FVar ("_" ++ show i))
+        pvars    = Set.toList . Set.map unP . Set.filter (isP) $ part
+        inp      = Set.toList . Set.map unI . Set.filter isI $ part
+        outp     = mapMaybe unO . Set.toList $ part
+        k        = length pvars
+        subst v  = case v of
+          IVar j -> IVar $ fromJust $ elemIndex j inp
+          PVar j -> PVar $ fromJust $ elemIndex j pvars
+          _      -> v
+        (ys,ys') = partition (\(i,_) -> i `elem` outp) $ (i,x):xs
+        (pp,pp') = (\(x,y) -> (ofTermList x, ofTermList y)) . (split part) . toTermList $ p
+        ysScrub  = map (rename subst) . snd . unzip . sortBy (\(i,_) (j,_) -> compare i j) $ ys
+        ppScrub  = rename subst pp
+    in
+      (inp,outp,Pathsum k (length inp) (length outp) k ppScrub ysScrub):(go pp' ys')
+
+-- | Drops scalar factors
+dropScalars :: (Eq g, Periodic g) => Pathsum g -> Pathsum g
+dropScalars sop =
+  let inCone    = Set.fromList [IVar i | i <- [0..inDeg sop - 1]]
+      outCone   = Set.unions $ inCone:(map vars $ outVals sop)
+      corr      = Partition.fromSets $ outCone:map vars (support $ phasePoly sop)
+      fullCone  = Partition.find corr (head $ Set.toList outCone)
+      pp        = ofTermList . filter f . toTermList $ phasePoly sop where
+        f (_,m) = not $ Set.disjoint fullCone (vars m)
+      shiftV ps = case ps of
+        Elim y -> shiftV $ applyElim y ps
+        _      -> ps
+  in
+    (shiftV $ sop { phasePoly = pp }) { sde = 0 } 
+                                                
 {--------------------------
  Simulation
  --------------------------}
