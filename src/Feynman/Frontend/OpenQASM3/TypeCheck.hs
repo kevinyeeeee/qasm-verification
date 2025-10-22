@@ -23,6 +23,24 @@ import Feynman.Frontend.OpenQASM3.Core
 
 {- Types -}
 
+{- Basically duplicated type, but with a "top" type -}
+data TypeConstraints = 
+    ConsCReg Int
+  | ConsQBit
+  | ConsQReg Int 
+  | ConsBool 
+  | ConsUInt (Maybe Int)
+  | ConsInt (Maybe Int)
+  | ConsAngle (Maybe Int)
+  | ConsFloat (Maybe Int)
+  | ConsCmplx (Maybe Int)
+  | ConsUnit
+  | ConsRange TypeConstraints
+  | ConsGate { numCargs :: Int, numQargs :: Int }
+  | ConsProc { argTypes :: [TypeConstraints], returnType :: Maybe TypeConstraints }
+  | ConsTop
+  deriving (Show)
+
 -- | Type elaborate with compile-time constant declarations
 data ElaboratedType = EType { ty :: Type,
                               isConstant :: Bool,
@@ -54,7 +72,8 @@ asTypeExpr' = asTypeExpr (pureType $ TUInt Nothing)
 -- | Type checking environment, consisting of bindings to
 --   elaborate types and a list of error messages
 data Env = Env { scopes :: [Map ID ElaboratedType],
-                 errs  :: [ErrMsg]
+                 errs  :: [ErrMsg],
+                 constraints :: TypeConstraints
                } deriving (Show)
 
 -- | The type checking monad
@@ -62,11 +81,73 @@ type TC = State Env
 
 -- | The empty environment
 emptyEnv :: Env
-emptyEnv = Env [Map.empty] []
+emptyEnv = Env [Map.empty] [] ConsTop
 
 -- | Environment pre-populated with built in gates
 initEnv :: Env
-initEnv = Env [fmap constType $ Map.fromList stdTypes] []
+initEnv = Env [fmap constType $ Map.fromList stdTypes] [] ConsTop
+
+-- | Modifies the output type constraints
+modifyConstraint :: (TypeConstraints -> Maybe TypeConstraints) -> TC () 
+modifyConstraint f =  do 
+  env <- get
+  let c = constraints env
+  case f (constraints env) of 
+    Nothing -> 
+      case c of 
+        ConsTop -> return ()
+        _ -> logMsg ("The constraints: " ++ (show c) ++ " were modified in an invalid way")
+    Just c ->
+      put (env { constraints = c })
+
+getConstraint :: TC TypeConstraints
+getConstraint = do 
+  env <- get 
+  return (constraints env)
+
+defaultType :: TypeConstraints -> TC Type
+defaultType (ConsCReg i) = return (TCReg i)
+defaultType ConsQBit = return TQBit
+defaultType (ConsQReg i) = return (TQReg i)
+defaultType ConsBool = return TBool
+defaultType (ConsUInt mi) = return (TUInt mi)
+defaultType (ConsInt mi) = return (TInt mi)
+defaultType (ConsAngle mi) = return (TAngle mi)
+defaultType (ConsFloat mi) = return (TFloat mi)
+defaultType (ConsCmplx mi) = return (TCmplx mi)
+defaultType ConsUnit = return TUnit
+defaultType (ConsRange c) = do
+   t <- defaultType c
+   return (TRange t)
+defaultType (ConsGate i1 i2) = return (TGate i1 i2)
+defaultType (ConsProc cs mc) = do
+  ts <- mapM defaultType cs
+  mt <- mapM defaultType mc
+  return (TProc ts mt)
+defaultType ConsTop = do
+  logMsg "I'm disallowing this! It's just too unconstrained";
+  return TUnit
+
+toConstraint :: Type -> TypeConstraints
+toConstraint (TCReg x) = ConsCReg x
+toConstraint TQBit = ConsQBit
+toConstraint (TQReg x) = ConsQReg x
+toConstraint TBool = ConsBool
+toConstraint (TUInt x) = ConsUInt x
+toConstraint (TInt x) = ConsInt x
+toConstraint (TAngle x) = ConsAngle x
+toConstraint (TFloat x) = ConsFloat x
+toConstraint (TCmplx x) = ConsCmplx x
+toConstraint TUnit = ConsUnit
+toConstraint (TRange x) = ConsRange (toConstraint x)
+toConstraint (TGate x y) = ConsGate x y
+toConstraint (TProc x y) = ConsProc (fmap toConstraint x) (fmap toConstraint y)
+
+incomingDefaultType :: TC Type 
+incomingDefaultType = do 
+  env <- get 
+  defaultType (constraints env)
+
 
 -- | Logs an error message
 logMsg :: String -> TC ()
@@ -93,10 +174,15 @@ closeProcScope :: [Map ID ElaboratedType] -> TC ()
 closeProcScope lScopes = modify (\env -> env { scopes = lScopes })
 
 -- | Looks up an identifier, beginning with the inner-most scope
-getBinding :: ID -> TC (Maybe ElaboratedType)
+getBinding :: ID -> TC ElaboratedType
 getBinding x = do
   env <- get
-  return . msum . map (Map.lookup x) $ scopes env
+  case msum . map (Map.lookup x) $ scopes env of 
+    Nothing -> do
+        c <- getConstraint
+        t <- defaultType c
+        return (pureType t)
+    Just x -> return x
 
 -- | Assigns a binding to an identifier. Causes an error if the identifier has a
 --   binding in the current scope
@@ -391,13 +477,7 @@ tcStmt stmt = case stmt of
 
   SExpr loc expr -> liftM (SExpr unitTy) $ tcExpr expr
 
-  SGateCall loc mods id cargs qargs -> getBinding id >>= \record -> case record of
-
-    Nothing -> do
-      logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ id
-      return $ SGateCall unitTy [] id [] []
-
-    Just (EType (TGate nC nQ) _ _) -> do
+  SGateCall loc mods id cargs qargs -> getBinding id >>= \(EType (TGate nC nQ) _ _) -> do
       mods <- mapM tcModifier mods
       cargs <- mapM (flip tcExprAs (TFloat Nothing)) cargs
       qargs <- broadcast =<< mapM tcAccessPath qargs
@@ -479,19 +559,36 @@ broadcast xs = case foldM go (-1) xs of
         AIndex (EType TQBit c v) var (EInt (pureType $ TUInt Nothing) i)
       _                            -> ap
       
+tcEq :: (AccessPath Location,Expr Location) -> TC (AccessPath ElaboratedType,Expr ElaboratedType)
+tcEq (ap,e) = do 
+  ap <- tcAccessPath ap
+  let et = typeof ap
+  modifyConstraint (\_ -> Just (toConstraint et));
+  e <- tcExpr e
+  return (ap,e)
+
 tcAnnotation :: Annotation Location -> TC (Annotation ElaboratedType)
-tcAnnotation = error "TODO"
+tcAnnotation (Other ss) = return (Other ss)
+tcAnnotation (Assert eqs) = do
+  eqs <- mapM tcEq eqs
+  return (Assert eqs)
+tcAnnotation (Fn (e1,e2)) = do 
+  e1 <- tcExpr e1
+  e2 <- tcExpr e2
+  return (Fn (e1, e2))
+tcAnnotation (Pre eqs) = do
+  eqs <- mapM tcEq eqs
+  return (Pre eqs)
+tcAnnotation (Post eqs) =do
+  eqs <- mapM tcEq eqs
+  return (Post eqs)
 
 -- | Expression type checking
 tcExpr :: Expr Location -> TC (Expr ElaboratedType)
 tcExpr expr = case expr of
   EVar loc var -> do
-    bind <- getBinding var
-    case bind of
-      Nothing -> do
-        logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ var
-        return $ EVar (pureType TUnit) var
-      Just typ -> return $ EVar typ var
+    typ <- getBinding var
+    return $ EVar typ var
 
   EIndex loc expr idx -> do
     expr <- tcExpr expr
@@ -510,21 +607,29 @@ tcExpr expr = case expr of
         return $ EIndex annot expr idx
 
   ECall loc var args -> do
+    modifyConstraint 
+      (\c -> 
+        case c of 
+          ConsTop -> Just ConsTop
+          _ -> Just (ConsProc (repeat ConsTop) (Just c)))
     bind <- getBinding var
     case bind of
-      Nothing ->  do
-        logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ var
-        args <- mapM tcExpr args
-        return $ ECall (pureType TUnit) var args
-      Just (EType (TProc params ret) _ _) -> do
+      (EType (TProc params ret) _ _) -> do
+        modifyConstraint (\_ -> Just ConsTop);
         args <- mapM (uncurry tcExprAs) (zip args params)
         return $ ECall (pureType $ fromMaybe TUnit ret) var args 
-      Just _ -> do
+      _ -> do
         logMsg $ "Type error at (" ++ show loc ++"): procedure type expected"
         args <- mapM tcExpr args
         return $ ECall (pureType TUnit) var args
 
   EMeasure loc expr -> do
+    modifyConstraint 
+      (\c -> 
+        case c of 
+          ConsBool -> Just ConsQBit
+          ConsCReg i -> Just (ConsQReg i)
+          _ -> Nothing)
     expr <- tcExpr expr
     case typeof expr of
       TQBit   -> return $ EMeasure (pureType TBool) expr
@@ -587,7 +692,7 @@ tcExpr expr = case expr of
 -- | Evaluates a suitably typed expression as a UInt
 evalUInt :: Expr ElaboratedType -> TC Int
 evalUInt expr = case expr of
-  EVar _ var -> getBinding var >>= return . fromJust . value . fromJust
+  EVar _ var -> getBinding var >>= return . fromJust . value
   EInt _ i -> return i
   EBits _ xs -> return $ foldr (+) 0 . map (\(b,i) -> if b then shift 1 i else 0) $ zip xs [0..]
   EUOp _ uop expr -> liftM (evalUOp uop) $ evalUInt expr
@@ -647,23 +752,17 @@ tcAccessPath ap = case ap of
   AVar loc var -> do
     typ <- getBinding var
     case typ of
-      Nothing -> do
-        logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ var
-        return $ AVar (pureType TUnit) var
-      Just typ -> return $ AVar typ var
+      typ -> return $ AVar typ var
   AIndex loc var expr -> do
     typ <- getBinding var
     expr <- tcExpr expr
-    case (typ, isIndexable (ty $ fromJust typ), typeof expr) of
-      (Nothing, _, _) -> do
-        logMsg $ "Error at (" ++ show loc ++ "): undeclared identifier " ++ var
-        return $ AVar (pureType TUnit) var
-      (Just typ, False, _) -> do
+    case (typ, isIndexable (ty typ), typeof expr) of
+      (typ, False, _) -> do
         logMsg $ "Type error at (" ++ show loc ++ "): variable " ++ var ++ " cannot be indexed"
         return $ AIndex typ var expr
-      (Just typ, _, TRange idxTyp) | castable idxTyp (TUInt Nothing) ->
+      (typ, _, TRange idxTyp) | castable idxTyp (TUInt Nothing) ->
         return $ AIndex typ var expr
-      (Just typ, _, idxTyp) | castable idxTyp (TUInt Nothing) ->
+      (typ, _, idxTyp) | castable idxTyp (TUInt Nothing) ->
         return $ AIndex (typ { ty = dereference (ty typ) }) var expr
       _ -> do
         logMsg $ "Type error at (" ++ show loc ++ "): invalid index type"
@@ -701,8 +800,8 @@ resolveType typ = case typ of
 -- | Type checks a program and converts the result into an alternative
 tcQasm :: Prog Location -> Either [ErrMsg] (Prog ElaboratedType)
 tcQasm prog = case runState (tcProg prog) initEnv of
-  (prog, Env _ []) -> Right prog
-  (_, Env _ xs)    -> Left xs
+  (prog, Env _ [] _) -> Right prog
+  (_, Env _ xs _)    -> Left xs
 
 -- | Prints out the list of error messages
 printErrors :: [ErrMsg] -> IO ()
