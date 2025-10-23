@@ -13,3 +13,6 @@ feynopt:
 feynver:
 	cabal build exe:feynver
 	cp dist/build/feynver/feynver ./feynver
+
+generate-data: all
+	python3 generate-data.py ./feynopt benchmarks/pldi26
