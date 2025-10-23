@@ -181,6 +181,8 @@ getBinding x = do
     Nothing -> do
         c <- getConstraint
         t <- defaultType c
+        let et = pureType t
+        assign x et;
         return (pureType t)
     Just x -> return x
 
@@ -683,6 +685,7 @@ tcExpr expr = case expr of
 
   ECast loc typexpr expr -> do
     typ <- resolveType typexpr
+    modifyConstraint (\_ -> Just (toConstraint typ));
     expr <- tcExpr expr
     when (not $ castable (typeof expr) typ) $
       logMsg $ "Type error at (" ++ show loc  ++ "): invalid cast"
