@@ -154,8 +154,8 @@ def sub_cuccaro_carry_only(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
   && anc      ==  |0>
   && f_1      ==  |0>
   && f_2      ==  |0>
-  && 0<=N     &&  N<(1<<n) 
-  && 0<=TN    &&  TN<(1<<n)
+  && 0 <= N   &&  N<(1<<n) 
+  && 0 <= TN  &&  TN<(1<<n)
   && N+TN     ==  (1<<n)
 @post A       ==  |r> 
   && B        ==  |int(r)+int(s)%N> 
@@ -191,8 +191,8 @@ def add_mod_N_in_place(
   && anc      ==  |0>
   && f_1      ==  |0>
   && f_2      ==  |0>
-  && 0<=N     &&  N<(1<<n) 
-  && 0<=TN    &&  TN<(1<<n)
+  && 0 <= N    &&  N<(1<<n) 
+  && 0 <= TN   &&  TN<(1<<n)
   && N+TN     ==  1<<n
 @post c       ==  |c> 
   && X        ==  |x>
@@ -251,8 +251,8 @@ def mod_inv(uint a)-> uint{     // As a,N are coprime, the existence of an inver
   && anc      ==  |0>
   && f_1      ==  |0>
   && f_2      ==  |0>
-  && 0<=N     &&  N   < (1<<n) 
-  && 0<=TN    &&  TN  < (1<<n)
+  && 0 <= N   &&  N   < (1<<n) 
+  && 0 <= TN  &&  TN  < (1<<n)
   && N+TN     ==  1<<n
 @post c       ==  |(c*a*x)%N> 
   && X        ==  |x>
@@ -294,7 +294,7 @@ def ctrl_mul_mod_N_in_place(
   && anc_1        ==  |0>
   && anc_2        ==  |0>
   && anc_3        ==  |0>
-  && 0<N          &&  N  <  (1<<n) 
+  && 0 < N        &&  N  <  (1<<n) 
 @post 
   (control,target)==  1/sqrt(2^n)*sum{j:uint[n]}|j,(a^j)%N>
   && CONST_N      ==  |0>
