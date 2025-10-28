@@ -1320,8 +1320,9 @@ normalizeClifford sop = go $ sop .> hLayer .> hLayer where
 -- | Decision procedure for equivalence via fallback to variable expansion
 (~~=) :: Pathsum DMod2 -> Pathsum DMod2 -> Bool
 (~~=) a b = a' == b' || go a' b' where
-  a' = canonicalizeKet . grind . vectorize $ a
-  b' = canonicalizeKet . grind . vectorize $ b
+  a' = canonicalizeKet . grind . vectorize . bind fv $ a
+  b' = canonicalizeKet . grind . vectorize . bind fv $ b
+  fv = union (freeVars a) (freeVars b)
 
   go a b | a == b               = True
          | outDeg a /= outDeg b = False
