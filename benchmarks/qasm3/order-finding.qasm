@@ -390,9 +390,10 @@ def period(uint[n] a, uint N)-> uint{
   && anc_2        ==  |0>
   && anc_3        ==  |0>
   && 0 < N        &&  N  <  (1<<n) 
+  && r            ==  period(a, N)
+  && (2^acc) %r   == 0
 @post 
   l:uint[n]
-  && r            ==  period(a, N)
   && out          ==  |l*2^acc*r>
   && control      ==  |out>
   && CONST_N      ==  |0>
@@ -400,7 +401,6 @@ def period(uint[n] a, uint N)-> uint{
   && anc_1        ==  |0>
   && anc_2        ==  |0>
   && anc_3        ==  |0>
-  && (2^acc) %r   == 0
 def period_estimation(
     uint acc,
     uint[n] a, 
