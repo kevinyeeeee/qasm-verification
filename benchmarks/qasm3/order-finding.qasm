@@ -191,8 +191,8 @@ def add_mod_N_in_place(
   && anc      ==  |0>
   && f_1      ==  |0>
   && f_2      ==  |0>
-  && 0 <= N    &&  N<(1<<n) 
-  && 0 <= TN   &&  TN<(1<<n)
+  && 0 < N    &&  N<(1<<n) 
+  && 0 < TN   &&  TN<(1<<n)
   && N+TN     ==  1<<n
 @post c       ==  |c> 
   && X        ==  |x>
@@ -251,8 +251,8 @@ def mod_inv(uint a)-> uint{     // As a,N are coprime, the existence of an inver
   && anc      ==  |0>
   && f_1      ==  |0>
   && f_2      ==  |0>
-  && 0 <= N   &&  N   < (1<<n) 
-  && 0 <= TN  &&  TN  < (1<<n)
+  && 0 < N   &&  N   < (1<<n) 
+  && 0 < TN  &&  TN  < (1<<n)
   && N+TN     ==  1<<n
 @post c       ==  |(c*a*x)%N> 
   && X        ==  |x>
@@ -296,13 +296,13 @@ def ctrl_mul_mod_N_in_place(
   && anc_3        ==  |0>
   && 0 < N        &&  N  <  (1<<n) 
 @post 
-  (control,target)==  1/sqrt(2^n)*sum{j:uint[n]}|j,(a^j)%N>
+  (control,target)==   1/sqrt(2^acc)*sum{j:uint[acc]}|j,(a^j)%N>
   && CONST_N      ==  |0>
   && CONST_TN     ==  |0>
   && anc_1        ==  |0>
   && anc_2        ==  |0>
   && anc_3        ==  |0>
-def order_finding_without_iqft(
+def prepare_period_superposition(
     uint acc,
     uint[n] a, 
     uint N,
@@ -328,16 +328,102 @@ def order_finding_without_iqft(
     if (((int(TN) >> i) & 1) == 1) { x CONST_TN[i]; }
   }
 }
-order_finding_without_iqft(
-  a,
-  N,
-  control,
-  target,
-  CONST_N,
-  CONST_TN,
-  anc_1,
-  anc_2,
-  anc_3,
-);
-iqft(control);
-out=measure control;
+
+@pre control      ==  |0  uint[acc]> 
+  && target       ==  |1: uint[n]>
+  && CONST_N      ==  |0: uint[n]>
+  && CONST_TN     ==  |0: uint[n]>
+  && anc_1        ==  |0>
+  && anc_2        ==  |0>
+  && anc_3        ==  |0>
+  && 0 < N        &&  N  <  (1<<n) 
+@post 
+  control         ==  1/sqrt(r) * sum{l=0}^{r-1}|l* 2^{acc}/r>
+  && CONST_N      ==  |0>
+  && CONST_TN     ==  |0>
+  && anc_1        ==  |0>
+  && anc_2        ==  |0>
+  && anc_3        ==  |0>
+  && r            == period(a, N)
+  && (2^acc) %r   == 0
+def period_phase_estimation(
+    uint acc,
+    uint[n] a, 
+    uint N,
+    qubit[acc] control,
+    qubit[n] target,
+    qubit[n] CONST_N,
+    qubit[n] CONST_TN,
+    qubit anc_1, 
+    qubit anc_2, 
+    qubit anc_3 
+  ){
+  prepare_period_superposition(
+    a,
+    N,
+    control,
+    target,
+    CONST_N,
+    CONST_TN,
+    anc_1,
+    anc_2,
+    anc_3,
+  );
+  iqft(control);
+}
+
+def period(uint[n] a, uint N)-> uint{
+  uint pow =1;
+  uint val =a;
+  while (val%N != 1){
+    val *=a;
+    pow +=1
+  }
+  return pow
+}
+
+@pre control      ==  |0  uint[acc]> 
+  && target       ==  |1: uint[n]>
+  && CONST_N      ==  |0: uint[n]>
+  && CONST_TN     ==  |0: uint[n]>
+  && anc_1        ==  |0>
+  && anc_2        ==  |0>
+  && anc_3        ==  |0>
+  && 0 < N        &&  N  <  (1<<n) 
+@post 
+  l:uint[n]
+  && r            == period(a, N)
+  && out          ==  |l*2^acc*r>
+  && control      ==  |out>
+  && CONST_N      ==  |0>
+  && CONST_TN     ==  |0>
+  && anc_1        ==  |0>
+  && anc_2        ==  |0>
+  && anc_3        ==  |0>
+  && (2^acc) %r   == 0
+def period_estimation(
+    uint acc,
+    uint[n] a, 
+    uint N,
+    qubit[acc] control,
+    qubit[n] target,
+    qubit[n] CONST_N,
+    qubit[n] CONST_TN,
+    qubit anc_1, 
+    qubit anc_2, 
+    qubit anc_3, 
+    bit[n] out
+  ){
+  period_phase_estimation(
+    a,
+    N,
+    control,
+    target,
+    CONST_N,
+    CONST_TN,
+    anc_1,
+    anc_2,
+    anc_3,
+  );
+  out=measure control;
+}
