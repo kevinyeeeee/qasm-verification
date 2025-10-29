@@ -1321,8 +1321,8 @@ normalizeClifford sop = go $ sop .> hLayer .> hLayer where
 -- | Decision procedure for equivalence via fallback to variable expansion
 (~~=) :: Pathsum DMod2 -> Pathsum DMod2 -> Bool
 (~~=) a b = a' == b' || go a' b' where
-  a' = canonicalizeKet . grind . vectorize . bind fv $ a
-  b' = canonicalizeKet . grind . vectorize . bind fv $ b
+  a' = canonicalizeKet . dropScalars . grind . vectorize . bind fv $ a
+  b' = canonicalizeKet . dropScalars . grind . vectorize . bind fv $ b
   fv = union (freeVars a) (freeVars b)
 
   go a b | a == b               = True
@@ -1373,6 +1373,8 @@ isOrthonormal sop
  --------------------------}
 
 -- | Computes the variable correlations in a path sum
+--
+--   Note: treats free variables as uncorrelated
 correlations :: Pathsum g -> Partition.Partition Var
 correlations sop = Partition.fromSets $ pCorrs ++ kCorrs where
   pCorrs = map (Set.filter (not . isF) . vars) (support $ phasePoly sop)
@@ -1421,6 +1423,8 @@ separate sop = go (phasePoly sop) (zip [0..] $ outVals sop)  where
       (inp,outp,Pathsum k (length inp) (length outp) k ppScrub ysScrub):(go pp' ys')
 
 -- | Drops scalar factors
+--
+--   Note: treats free variables as correlated (non-global) phase
 dropScalars :: (Eq g, Periodic g) => Pathsum g -> Pathsum g
 dropScalars sop =
   let inCone    = Set.fromList [IVar i | i <- [0..inDeg sop - 1]]
