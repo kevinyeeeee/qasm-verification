@@ -46,8 +46,8 @@ import Feynman.Frontend.OpenQASM3.Spec
   ':'      { TColon }
   ','      { TComma }
   '.'      { TDot }
-  '='      { TEquals }
-  '&'      { TAnd }
+  '=='      { TEquals }
+  '&&'      { TAnd }
   '`'      { TBacktick }
   id       { TID   $$ }
   real     { TReal $$ }
@@ -57,12 +57,12 @@ import Feynman.Frontend.OpenQASM3.Spec
 
 type : bit               { Bit }
      | bit '[' expr ']'  { Reg $3 }
-     | uint '[' expr ']' { Reg $3 }
+     | uint '[' expr ']' { UInt $3 }
 
 assertions : assertion                { [$1] }
-           | assertions '&' assertion { $1 ++ [$3] }
+           | assertions '&&' assertion { $1 ++ [$3] }
 
-assertion : sexprs '=' sexprs { Equals $1 $3 }
+assertion : sexprs '==' sexprs { Equals $1 $3 }
 
 sexprs : sexpr            { $1 }
        | '(' sexprs ')'    { $2 }
@@ -73,7 +73,7 @@ sexpr : expr                        { $1 }
       | sum '{' decls '}' '.' sexpr { Sum $3 $6 }
 
 expr : term          { $1 }
-     | expr '+' sexprs { BExp $1 Plus $3 }
+     | sexprs '+' sexprs { BExp $1 Plus $3 }
      | expr '-' term { BExp $1 Minus $3 }
      | expr '%' term { BExp $1 Mod $3 }
 

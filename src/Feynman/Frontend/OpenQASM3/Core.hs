@@ -35,6 +35,7 @@ data Annotation a =
     | Fn (Expr a,Expr a)
     | Pre [(AccessPath a,Expr a)]
     | Post [(AccessPath a,Expr a)]
+    | Triple [(AccessPath a, Expr a)] [(AccessPath a, Expr a)]
   deriving (Show)
 
 type Version    = (Int, Maybe Int)
@@ -138,6 +139,12 @@ isNumeric typeexpr = case typeexpr of
   TCmplx _ -> True
   _        -> False
 
+isQuantum :: TypeExpr' a -> Bool
+isQuantum typeexpr = case typeexpr of
+  TQReg _ -> True
+  TQBit   -> True
+  _       -> False
+
 -- | Classifies types as bit-like
 isBitvec :: TypeExpr' a -> Bool
 isBitvec typeexpr = case typeexpr of
@@ -213,13 +220,13 @@ data Expr a = EVar a ID
             | EStmt a (Stmt a)
             | ECast a (TypeExpr a) (Expr a)
             -- Spec only sum-over-path expresions
-            | EVarDec ID (TypeExpr a)
-            | Ket (Expr a)
-            | Fun [(ID,Maybe (TypeExpr a))] (Expr a)
-            | Sum [(ID,Maybe (TypeExpr a))] (Expr a)
-            | Tensor (Expr a) (Expr a)
-            | Compose (Expr a) (Expr a)
-            | Dagger (Expr a)
+            | EVarDec a ID (TypeExpr a)
+            | Ket a (Expr a)
+            | Fun a [(ID,Maybe (TypeExpr a))] (Expr a)
+            | Sum a [(ID,Maybe (TypeExpr a))] (Expr a)
+            | Tensor a (Expr a) (Expr a)
+            | Compose a (Expr a) (Expr a)
+            | Dagger a (Expr a)
             deriving (Show)
 
 instance Annotated Expr where
@@ -241,6 +248,9 @@ instance Annotated Expr where
     EBOp a _ _ _ -> a
     EStmt a _ -> a
     ECast a _ _ -> a
+    Ket a _ -> a
+    Tensor a _ _ -> a
+    Sum a _ _ -> a
 
 -- | Declarations
 data Decl a =
@@ -459,6 +469,7 @@ qasmToCore = translateProg
 typeFromSpec :: a -> Spec.Type -> TypeExpr a
 typeFromSpec x Spec.Bit = TBool
 typeFromSpec x (Spec.Reg e) = TCReg (exprFromSpec x e)
+typeFromSpec x (Spec.UInt e) = TUInt . Just $ exprFromSpec x e
 
 accessPathFromSpec :: a -> Spec.SExpr -> AccessPath a
 accessPathFromSpec x (Spec.Var i Nothing) = AVar x i
@@ -469,20 +480,20 @@ exprFromSpec = efs
   where
     efs x (Spec.Var i Nothing) = EVar x i
     efs x (Spec.Var i (Just e')) = EIndex x (EVar x i) (efs x e')
-    efs x (Spec.VarDec i t) = EVarDec i (typeFromSpec x t)
+    efs x (Spec.VarDec i t) = EVarDec x i (typeFromSpec x t)
     efs x (Spec.ILit i) = EInt x i
     efs x (Spec.RLit r) = EFloat x r
     efs x (Spec.Pi) = EPi x
     efs x (Spec.BExp e1 b e2) = EBOp x (efs x e1) (bfs b) (efs x e2)
     efs x (Spec.UExp u e') = EUOp x (ufs u) (efs x e')
-    efs x (Spec.Ket e') = Ket (efs x e')
+    efs x (Spec.Ket e') = Ket x (efs x e')
     efs x (Spec.Fun bindings e') = 
-      Fun (fmap (\(i,mt) -> (i,fmap (typeFromSpec x) mt)) bindings) (efs x e')
+      Fun x (fmap (\(i,mt) -> (i,fmap (typeFromSpec x) mt)) bindings) (efs x e')
     efs x (Spec.Sum bindings e') = 
-      Sum (fmap (\(i,mt) -> (i,fmap (typeFromSpec x) mt)) bindings) (efs x e')
-    efs x (Spec.Tensor e1 e2) = Tensor (efs x e1) (efs x e2)
-    efs x (Spec.Compose e1 e2) = Compose (efs x e1) (efs x e2)
-    efs x (Spec.Dagger e') = Dagger (efs x e')
+      Sum x (fmap (\(i,mt) -> (i,fmap (typeFromSpec x) mt)) bindings) (efs x e')
+    efs x (Spec.Tensor e1 e2) = Tensor x (efs x e1) (efs x e2)
+    efs x (Spec.Compose e1 e2) = Compose x (efs x e1) (efs x e2)
+    efs x (Spec.Dagger e') = Dagger x (efs x e')
 
     bfs Spec.Plus = PlusOp
     bfs Spec.Minus = MinusOp
@@ -589,8 +600,10 @@ translateExpr node = case node of
 
   S.Node S.IndexExpr [exprnode, idxnode] c -> do
     expr <- translateExpr exprnode
-    idx  <- translateExpr idxnode
-    return $ EIndex c expr idx
+    idxs  <- inLst translateExpr idxnode
+    case idxs of
+      [idx] -> return $ EIndex c expr idx
+      _     -> Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Multiple indices unsupported")
 
   S.Node (S.UnaryOperatorExpr uop) [exprnode] c -> do
     op   <- translateUOp uop
@@ -689,6 +702,24 @@ translateModifier node = case node of
 
   _  -> Left (Err $ "Fatal: malformed modifier node (" ++ show node ++ ")")
 
+translateAnnotations :: [S.ParseNode] -> Either ErrMsg [Annotation S.SourceRef]
+translateAnnotations nodes = case nodes of
+  (S.Node (S.Annotation "pre" str _) [] c):
+    (S.Node (S.Annotation "post" str' _) [] c'):
+    ns ->
+      let preAssertions  = SpecParser.parseAssertion . SpecLexer.lexer $ str
+          postAssertions = SpecParser.parseAssertion . SpecLexer.lexer $ str' in do
+        rest <- translateAnnotations ns
+        return $ Triple (translateAssertions c preAssertions) (translateAssertions c postAssertions) : rest
+  node:ns -> do
+    annot <- translateAnnotation node
+    rest <- translateAnnotations ns
+    return $ annot : rest
+  [] -> return []
+  where 
+    translateAssertions c assertions = 
+      fmap (\(Spec.Equals e1 e2) -> (accessPathFromSpec c e1,exprFromSpec c e2)) assertions
+
 -- | Translation of Annotations
 translateAnnotation :: S.ParseNode -> Either ErrMsg (Annotation S.SourceRef)
 translateAnnotation node = case node of
@@ -696,12 +727,6 @@ translateAnnotation node = case node of
     let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
     Right (Assert (translateAssertions c assertions))
   S.Node (S.Annotation "fn" str _) [] c -> return (Fn (error "TODO"))
-  S.Node (S.Annotation "pre" str _) [] c -> 
-    let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
-    Right (Pre (translateAssertions c assertions))
-  S.Node (S.Annotation "post" str _) [] c ->
-    let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
-    Right (Post (translateAssertions c assertions))
   S.Node (S.Annotation a str _) [] c -> return (Other (a,str))
   _  -> Left (Err $ "Fatal: malformed annotation node (" ++ show node ++ ")")
   where 
@@ -729,7 +754,7 @@ translateStmt node = case node of
   S.Node S.Statement [stmt] c -> translateStmt stmt
 
   S.Node S.Statement (stmt:xs) c -> do
-    annots <- mapM translateAnnotation xs
+    annots <- translateAnnotations xs
     s <- translateStmt stmt
     return $ SAnnotated c annots s
 

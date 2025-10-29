@@ -159,7 +159,7 @@ pushScope = modify (\env -> env { scopes = Map.empty:(scopes env) })
 
 -- | Pops the local scope off the stack
 popScope :: TC ()
-popScope = modify (\env -> env { scopes = Map.empty:(scopes env) })
+popScope = modify (\env -> env { scopes = tail (scopes env) })
 
 -- | Opens a new procedure scope which contains exactly the global constants
 openProcScope :: [(ID, Type)] -> TC [Map ID ElaboratedType]
@@ -281,7 +281,9 @@ castable from to = case from of
   TCReg i -> case to of
     TBool    -> True
     TInt j   -> Just i == j
-    TUInt j  -> Just i == j
+    TUInt j  -> case j of
+      Just j  -> i == j
+      Nothing -> True
     TAngle j -> Just i == j
     TCReg j  -> i == j
     _         -> False
@@ -392,8 +394,11 @@ tcBOp typ bop typ' = case bop of
   GTOp     | isJust typ'' && isComparable (fromJust typ'') -> typ''
   GEqOp    | isJust typ'' && isComparable (fromJust typ'') -> typ''
   PlusOp   | isNumeric typ && isNumeric typ' -> typ''
+  PlusOp   | isQuantum typ && isQuantum typ' -> typ''
   MinusOp  | isNumeric typ && isNumeric typ' -> typ''
+  TimesOp  | isNumeric typ && isQuantum typ' -> Just typ'
   TimesOp  | isNumeric typ && isNumeric typ' -> typ''
+  TimesOp  | isBitvec typ && isBitvec typ'   -> typ''
   DivOp    | isNumeric typ && isNumeric typ' -> typ''
   ModOp    | isNumeric typ && isNumeric typ' -> typ''
   PowOp    | isNumeric typ && isNumeric typ' -> typ''
@@ -536,8 +541,8 @@ tcStmt stmt = case stmt of
     return $ SWhile unitTy expr stmt
 
   SAnnotated loc annots stmt -> do
+    annots <- mapM (tcAnnotation stmt) annots
     stmt <- tcStmt stmt
-    annots <- mapM tcAnnotation annots
     return $ SAnnotated unitTy annots stmt
 
   SPragma loc str -> return $ SPragma unitTy str
@@ -569,19 +574,32 @@ tcEq (ap,e) = do
   e <- tcExpr e
   return (ap,e)
 
-tcAnnotation :: Annotation Location -> TC (Annotation ElaboratedType)
-tcAnnotation (Other ss) = return (Other ss)
-tcAnnotation (Assert eqs) = do
+tcAnnotation :: Stmt Location -> Annotation Location -> TC (Annotation ElaboratedType)
+tcAnnotation _ (Other ss) = return (Other ss)
+tcAnnotation _ (Assert eqs) = do
   eqs <- mapM tcEq eqs
   return (Assert eqs)
-tcAnnotation (Fn (e1,e2)) = do 
+tcAnnotation _ (Fn (e1,e2)) = do 
   e1 <- tcExpr e1
   e2 <- tcExpr e2
   return (Fn (e1, e2))
-tcAnnotation (Pre eqs) = do
+tcAnnotation stmt (Triple pre post) = case stmt of
+  SDeclare _ decl -> 
+    let params = case decl of
+          DDef  {dparams = p} -> p
+          DGate {gparams = p, gqargs = args} -> p ++ zip args (repeat TQBit)
+    in do
+    let (ids, typeExprs) = unzip params
+    types <- mapM resolveType typeExprs
+    scope <- openProcScope (zip ids types)
+    pre <- mapM tcEq pre
+    post <- mapM tcEq post
+    closeProcScope scope
+    return (Triple pre post)
+tcAnnotation stmt (Pre eqs) = do
   eqs <- mapM tcEq eqs
   return (Pre eqs)
-tcAnnotation (Post eqs) =do
+tcAnnotation stmt (Post eqs) =do
   eqs <- mapM tcEq eqs
   return (Post eqs)
 
@@ -673,7 +691,7 @@ tcExpr expr = case expr of
     expr' <- tcExpr expr'
     case tcBOp (typeof expr) bop (typeof expr') of
       Nothing -> do
-        logMsg $ "Type error at (" ++ show loc ++ "): invalid operand types"
+        logMsg $ "Type error at (" ++ show loc ++ "): invalid operand types - " ++ show expr ++ show expr'
         return $ EBOp (getAnnotation expr) expr bop expr'
       Just rTyp ->
         let isConstTy = isConstant . getAnnotation in
@@ -691,6 +709,63 @@ tcExpr expr = case expr of
       logMsg $ "Type error at (" ++ show loc  ++ "): invalid cast"
     return $ ECast ((getAnnotation expr){ ty = typ }) (asTypeExpr' typ) expr
         
+  EVarDec loc id typexpr -> do
+    typ <- resolveType typexpr
+    let etyp = pureType typ
+    assign id etyp
+    return $ EVar etyp id
+  
+  Ket loc expr -> do
+    modifyConstraint 
+      (\c -> case c of
+        ConsQBit -> Just ConsBool
+        ConsQReg i -> Just $ ConsCReg i
+        _          -> Just c)
+    expr <- tcExpr expr
+    case typeof expr of
+      TBool          -> return $ Ket (pureType TQBit) expr
+      TCReg n        -> return $ Ket (pureType (TQReg n)) expr
+      TUInt (Just n) -> return $ Ket (pureType (TUInt (Just n))) expr
+      TInt _  -> case value . getAnnotation $ expr of
+        Just 0 -> return $ Ket (pureType TQBit) (EBool (pureType TBool) False)
+        Just 1 -> return $ Ket (pureType TQBit) (EBool (pureType TBool) True)
+      _       -> error $ show expr
+
+  Fun _ _ _ -> error "TODO"
+
+  Sum loc binds expr -> do
+    c <- getConstraint
+    let (ids, types) = unzip binds
+    bindTypes <- mapM (maybe (return TBool) resolveType) types
+    let binds = zip ids bindTypes
+    pushScope
+    mapM (\(id, ty) -> assign id (pureType ty)) binds
+    expr <- tcExpr expr
+    popScope
+    let binds = zip ids (fmap (Just . asTypeExpr') bindTypes)
+    return $ Sum (getAnnotation expr) binds expr
+
+  Tensor loc expr1 expr2 -> do
+    expr1 <- tcExpr expr1
+    expr2 <- tcExpr expr2
+    let ty = case (typeof expr1, typeof expr2) of
+          (TQReg n, TQReg m) -> TQReg (n+m)
+          (TQBit  , TQReg m) -> TQReg (m+1)
+          (TQReg n, TQBit  ) -> TQReg (n+1)
+          (TQBit  , TQBit  ) -> TQReg 2
+    return $ Tensor (pureType ty) expr1 expr2
+
+    -- let (ids,types) = unzip params
+    -- paramTypes <- mapM resolveType types
+    -- let params = zip ids paramTypes
+    -- ret <- mapM resolveType ret
+    -- let fTyp = TProc paramTypes ret
+    -- scopes <- openProcScope $ (var,fTyp):params
+    -- body <- tcStmt body
+    -- closeProcScope scopes
+    -- assign var (constType fTyp)
+  _ -> error $ show expr
+
 
 -- | Evaluates a suitably typed expression as a UInt
 evalUInt :: Expr ElaboratedType -> TC Int
