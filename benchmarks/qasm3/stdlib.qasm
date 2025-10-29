@@ -153,7 +153,7 @@ gate cswap a, b, c { ctrl @ swap a, b, c; }
 @post   (a,b) == 1/2 * sum{y,z} exp(
                     π*x*γ
                     + (1 - x)  * π * z * y
-                    + x       * (φ*y + λ*w - (φ+λ)/2 + π/2*(y-w) - θ/2 + z*(θ + π*(w+y))))
+                    + x        * (φ*y + λ*w - (φ+λ)/2 + π/2*(y-w) - θ/2 + z*(θ + π*(w+y))))
     | x, (1 + x)*w + x*y >
 gate cu(θ, φ, λ, γ) c, t { p(γ) c; ctrl @ U(θ, φ, λ) c, t; }
 
