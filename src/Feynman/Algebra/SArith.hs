@@ -25,30 +25,48 @@ import Feynman.Algebra.Polynomial.Multilinear
  Core types
  ----------------------------}
 
--- | Symbolic (bit-blasted) unsigned integers. The lowest-order bit is the first bit
-newtype SUInt v = SUInt [SBool v]
+data Sign = Unsigned | Signed
+data SignWit :: Sign -> Type where
+  WitUnsigned :: SignWit 'Unsigned
+  WitSigned   :: SignWit 'Signed
 
--- | Symbolic (bit-blasted) integers. The lowest-order bit is the first bit,
---   with the last bit the sign bit
-newtype SInt v = SInt [SBool v]
+class SignC sign where
+  witSign :: SignWit sign
+
+instance SignC 'Unsigned where
+  witSign = WitUnsigned
+instance SignC 'Signed where
+  witSign = WitSigned
+
+-- | Symbolic bit-blasted integers. Lowest-order bit is the first bit.
+--   Signed integers are represents via 2's complement with the most significant
+--   bit as the sign bit
+newtype SInteger (sign :: Sign) v = { unWrap :: SInt [SBool v] }
+
+type SUInt v = SInteger 'Unsigned v
+type SInt  v = SInteger 'Signed v
 
 {---------------------------
  Utilities
  ----------------------------}
 
 -- | Returns the width of an SUInt
-getWidth :: SUInt v -> Int
+getWidth :: SInteger sign v -> Int
 getWidth = length
 
 -- | Truncates or extends a symbolic uint to /n/ bits
-setWidth :: MVar v => SUInt v -> Int -> SUInt v
-setWidth sa n = take n sa ++ (replicate (n - length sa) 0)
+setWidth :: (MVar v, SignC sign) => SInteger sign v -> Int -> SInteger sign v
+setWidth (SInt xs) n = setWidth' witSign where
+  setWidth' WitUnsigned = SInt $ take n xs ++ (replicate (n - length xs) 0)
+  setWidth' WitSigned
+    | getWidth sa == 0 = SInt $ replicate n 0
+    | otherwise        = SInt $ take n xs ++ (replicate (n - length xs) $ head $ reverse xs)
 
 -- | Turns an arbitrary integer into a symbolic int
 makeSInt :: MVar v => Integer -> SInt v
 makeSInt i
   | i < 0     = sNeg $ go (-i)
-  | otherwise = go i
+  | otherwise = SInt $ go i
   where go 0  = []
         go i  = case i `mod` 2 of
           0 -> 0:go (i `shiftR` 1)
@@ -57,9 +75,9 @@ makeSInt i
 -- | Turns a positive integer into a symbolic uint of arbitrary length
 makeSUInt :: MVar v => Integer -> SUInt v
 makeSUInt i
-  | i == 0    = []
+  | i == 0    = SInt $ []
   | i < 0     = error "Can't represent signed integers"
-  | otherwise = case i `mod` 2 of
+  | otherwise = SInt $ case i `mod` 2 of
       0 -> 0:makeSUInt (i `shiftR` 1)
       1 -> 1:makeSUInt (i `shiftR` 1)
 
@@ -77,8 +95,6 @@ isNat = isJust . toNat
 -- | Forces a symbolic uint to a Nat. Throws an error if it is symbolic
 forceNat :: MVar v => SUInt v -> Integer
 forceNat = fromJust . toNat
-
--- | 
 
 -- | Given x:uint[n], generates the list of indicator polynomials:
 --    [x==0, x==1, x==2, ..., x==2^n-1]
