@@ -844,7 +844,7 @@ plus sop sop'
 
       sumUp (sop, sop') = Pathsum a b c d e f where
         z = ofVar (PVar (d - 1))
-        a = sde sop + 1
+        a = sde sop
         b = inDeg sop
         c = outDeg sop
         d = pathVars sop + 1
