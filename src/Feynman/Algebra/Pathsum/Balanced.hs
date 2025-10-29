@@ -1375,9 +1375,9 @@ isOrthonormal sop
 -- | Computes the variable correlations in a path sum
 correlations :: Pathsum g -> Partition.Partition Var
 correlations sop = Partition.fromSets $ pCorrs ++ kCorrs where
-  pCorrs = map vars (support $ phasePoly sop)
+  pCorrs = map (Set.filter (not . isF) . vars) (support $ phasePoly sop)
   kCorrs = map go $ zip (outVals sop) [0..] where
-    go (f,i) = Set.insert (FVar ("_" ++ show i)) $ vars f
+    go (f,i) = Set.insert (FVar ("_" ++ show i)) . Set.filter (not . isF) $ vars f
 
 -- | Factor a pathsum into a tensor product of separable factors
 --
