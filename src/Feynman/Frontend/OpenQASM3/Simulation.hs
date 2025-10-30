@@ -12,7 +12,7 @@ import Feynman.Core (ID)
 import Feynman.Frontend.OpenQASM3.Core
 import Feynman.Frontend.OpenQASM3.TypeCheck (ElaboratedType(EType,ty), typeof)
 import Feynman.Algebra.Polynomial.Multilinear (SBool, ofVar, rename, PseudoBoolean, cast, constant, canonicalize)
-import Data.Bits (Bits, testBit, xor, (.>>.), (.&.))
+import Data.Bits (Bits, testBit, xor, (.&.))
 import Data.Complex ( Complex, imagPart, realPart )
 
 import qualified Feynman.Util.Unicode as U
@@ -20,6 +20,8 @@ import GHC.Real (reduce)
 import Feynman.Frontend.OpenQASM3.Core (TypeExpr'(TCReg))
 import Feynman.Algebra.SArith (sPopcount, sAnd, sXor, sLShift, sLRot)
 import Control.Monad (forM)
+
+import qualified Debug.Trace as Trace
 
 isPowerOfTwo :: (Bits i, Integral i) => i -> Bool
 isPowerOfTwo n = n > 0 && (n .&. (n - 1)) == 0
@@ -518,7 +520,7 @@ simKet expr = case expr of
       TBool          -> return $ ket [ ofVar vid ]
       TCReg n        -> return $ ket [ ofVar (varOfOffset vid i) | i <- [0..n-1] ]
       TUInt (Just m) -> return $ ket [ ofVar (varOfOffset vid i) | i <- [0..m-1] ]
-  Ket _ e                 -> liftM (ket . List.singleton) (exprToBoolPoly e)
+  Ket _ e                 -> liftM (ket . (\a -> [a])) (exprToBoolPoly e)
   EBOp _ e1 PlusOp e2 -> do
     ps1 <- simKet e1
     ps2 <- simKet e2
@@ -572,11 +574,10 @@ exprToBoolPoly e = case e of
     return $ p1 + p2
 
 sumOver :: [(ID, Maybe Type)] -> Pathsum DMod2 -> Pathsum DMod2
-sumOver svars ps = foldr sumVar ps svars
-  where
-    sumVar (vid, Nothing)               ps = sumVar (vid, Just TBool) ps
-    sumVar (vid, Just TBool)            ps = (substitute [FVar vid] 0 ps) + (substitute [FVar vid] 1 ps)
-    sumVar (vid, Just (TUInt (Just n))) ps = foldr (\id ps' -> sumVar (id, Just TBool) ps') ps [ varOfOffset vid i | i <- [0..n-1]]
+sumOver svars = sumover (concatMap go svars) where
+  go (vid, Nothing)               = [vid]
+  go (vid, Just TBool)            = [vid]
+  go (vid, Just (TUInt (Just n))) = [varOfOffset vid i | i <- [0..n-1]]
 
 simBlock :: SBool Var -> [Stmt ElaboratedType] -> State Env (Maybe Value)
 simBlock p = foldM f Nothing
