@@ -387,12 +387,12 @@ tcBOp typ bop typ' = case bop of
   RShiftOp | isBitvec typ && castable typ' (TUInt Nothing) -> Just typ
   LRotOp   | isBitvec typ && castable typ' (TUInt Nothing) -> Just typ
   RRotOp   | isBitvec typ && castable typ' (TUInt Nothing) -> Just typ
-  EqOp     | isJust typ'' && isComparable (fromJust typ'') -> typ''
-  NEqOp    | isJust typ'' && isComparable (fromJust typ'') -> typ''
-  LTOp     | isJust typ'' && isComparable (fromJust typ'') -> typ''
-  LEqOp    | isJust typ'' && isComparable (fromJust typ'') -> typ''
-  GTOp     | isJust typ'' && isComparable (fromJust typ'') -> typ''
-  GEqOp    | isJust typ'' && isComparable (fromJust typ'') -> typ''
+  EqOp     | isJust typ'' && isComparable (fromJust typ'') -> Just TBool
+  NEqOp    | isJust typ'' && isComparable (fromJust typ'') -> Just TBool
+  LTOp     | isJust typ'' && isComparable (fromJust typ'') -> Just TBool
+  LEqOp    | isJust typ'' && isComparable (fromJust typ'') -> Just TBool
+  GTOp     | isJust typ'' && isComparable (fromJust typ'') -> Just TBool
+  GEqOp    | isJust typ'' && isComparable (fromJust typ'') -> Just TBool
   PlusOp   | isNumeric typ && isNumeric typ' -> typ''
   PlusOp   | isQuantum typ && isQuantum typ' -> typ''
   MinusOp  | isNumeric typ && isNumeric typ' -> typ''
@@ -605,7 +605,7 @@ tcAnnotation stmt (Post eqs) =do
 
 -- | Expression type checking
 tcExpr :: Expr Location -> TC (Expr ElaboratedType)
-tcExpr expr = case expr of
+tcExpr expr0 = case expr0 of
   EVar loc var -> do
     typ <- getBinding var
     return $ EVar typ var
@@ -682,7 +682,7 @@ tcExpr expr = case expr of
     let annot = getAnnotation expr
     case tcUOp uop (ty annot) of
       Nothing -> do
-        logMsg $ "Type error at (" ++ show loc ++ "): invalid operand type"
+        logMsg $ "Type error at (" ++ show loc ++ ") in " ++ prettyPrintExpr expr0
         return $ EUOp annot uop expr
       Just rTyp -> return $ EUOp (annot { ty = rTyp }) uop expr
 
@@ -691,7 +691,7 @@ tcExpr expr = case expr of
     expr' <- tcExpr expr'
     case tcBOp (typeof expr) bop (typeof expr') of
       Nothing -> do
-        logMsg $ "Type error at (" ++ show loc ++ "): invalid operand types - " ++ show expr ++ show expr'
+        logMsg $ "Type error at (" ++ show loc ++ ") in " ++ prettyPrintExpr expr0
         return $ EBOp (getAnnotation expr) expr bop expr'
       Just rTyp ->
         let isConstTy = isConstant . getAnnotation in
@@ -764,7 +764,7 @@ tcExpr expr = case expr of
     -- body <- tcStmt body
     -- closeProcScope scopes
     -- assign var (constType fTyp)
-  _ -> error $ show expr
+  _ -> error $ show expr0
 
 
 -- | Evaluates a suitably typed expression as a UInt
@@ -849,19 +849,19 @@ tcAccessPath ap = case ap of
 -- | Resolves a type
 resolveType :: TypeExpr Location -> TC Type
 resolveType typ = case typ of
-  TCReg expr  -> tcSize expr >>= return . TCReg
-  TQBit       -> return TQBit
-  TQReg expr  -> tcSize expr >>= return . TQReg
-  TBool       -> return TBool
-  TUInt expr  -> mapM tcSize expr >>= return . TUInt
-  TInt expr   -> mapM tcSize expr >>= return . TInt
-  TAngle expr -> mapM tcSize expr >>= return . TAngle
-  TFloat expr -> mapM tcSize expr >>= return . TFloat
-  TCmplx expr -> mapM tcSize expr >>= return . TCmplx
-  TUnit       -> return TUnit
-  TRange ty   -> resolveType ty >>= return . TRange
-  TGate nc nq -> return $ TGate nc nq
-  TProc at rt -> pure TProc <*> mapM resolveType at <*> mapM resolveType rt
+  TCReg expr       -> tcSize expr >>= return . TCReg
+  TQBit            -> return TQBit
+  TQReg expr       -> tcSize expr >>= return . TQReg
+  TBool            -> return TBool
+  TUInt expr       -> mapM tcSize expr >>= return . TUInt
+  TInt expr        -> mapM tcSize expr >>= return . TInt
+  TAngle expr      -> mapM tcSize expr >>= return . TAngle
+  TFloat expr      -> mapM tcSize expr >>= return . TFloat
+  TCmplx expr      -> mapM tcSize expr >>= return . TCmplx
+  TUnit            -> return TUnit
+  TRange ty        -> resolveType ty >>= return . TRange
+  TGate nc nq      -> return $ TGate nc nq
+  TProc at rt      -> pure TProc <*> mapM resolveType at <*> mapM resolveType rt
 
   where
 

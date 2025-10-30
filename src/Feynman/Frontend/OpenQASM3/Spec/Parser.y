@@ -75,9 +75,9 @@ sexprs : sexpr            { $1 }
        | '(' sexprs ')'    { $2 }
        | sexprs ',' sexpr { Tensor $1 $3 }
 
-sexpr : expr                    { $1 }
-      | fun decls arrow sexpr   { Fun $2 $4 }
-      | sum '{' decls '}' sexpr { Sum $3 $5 }
+sexpr : expr                        { $1 }
+      | fun decls arrow sexpr       { Fun $2 $4 }
+      | sum '{' decls '}' '.' sexpr { Sum $3 $6 }
 
 refinement : refinement1               { $1 }
            | refinement or refinement1 { BExp $1 Or $3 }

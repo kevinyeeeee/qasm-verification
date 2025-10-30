@@ -9,6 +9,8 @@ Portability : portable
 
 module Feynman.Frontend.OpenQASM3.Spec where
 
+import Control.Monad
+
 import Feynman.Core (ID)
 import Feynman.Algebra.Base (Dyadic(..), DyadicRational, DMod2)
 
@@ -48,7 +50,75 @@ data SExpr = Var ID (Maybe SExpr)
            deriving (Show)
 
 -- | Assertions. Conjunctions of assertions are represented as lists
-data Assertion = Equals SExpr SExpr
+data Assertion = Equals SExpr SExpr deriving (Show)
+
+{- Transformations -}
+
+-- | Erases all refinements within an assertion
+eraseRefinements :: Assertion -> Assertion
+eraseRefinements (Equals lval rval) = Equals lval rval' where
+  rval' = case go rval of
+    (rval, Nothing)   -> rval
+    (rval, Just refs) -> Tensor rval refs
+
+  sumOfRef exp = Sum [("%%%", Just Bit)] $ UExp Exp exponent where
+    exponent = BExp (Var "%%%" Nothing) And (UExp Neg exp)
+
+  combineRefs r1 r2 = case (r1, r2) of
+    (Just r1', Just r2') -> Just $ Tensor r1' r2'
+    _                    -> mplus r1 r2
+
+  collectRefs :: Maybe Type -> (Maybe Type, Maybe SExpr)
+  collectRefs ty = case ty of
+    Just (Refined ty exp) ->
+      let (ty', refs) = collectRefs (Just ty) in
+        (ty', combineRefs (Just $ sumOfRef exp) refs)
+    _               -> (ty, Nothing)
+
+  processDecs :: [(ID, Maybe Type)] -> ([(ID, Maybe Type)], Maybe SExpr)
+  processDecs xs = foldr processDec ([], Nothing) xs where
+    processDec (id, ty) (xs,refs) =
+      let (ty', refs') = collectRefs ty in
+        ((id,ty'):xs, combineRefs refs refs')
+
+  applyRef :: Maybe SExpr -> SExpr -> SExpr
+  applyRef r exp = case r of
+    Nothing  -> exp
+    Just ref -> Tensor ref exp
+
+  go sexpr = case sexpr of
+    VarDec id ty  ->
+      let (Just ty', refs) = collectRefs (Just ty) in
+        (VarDec id ty', refs)
+    BExp s1 op s2 ->
+      let (s1', refs1) = go s1
+          (s2', refs2) = go s2
+      in
+        (BExp s1' op s2', combineRefs refs1 refs2)
+    UExp op s -> let (s', refs) = go s in (UExp op s', refs)
+    Ket s -> let (s', refs) = go s in (Ket s', refs)
+    Fun decs s ->
+      let (s', refs)     = go s
+          (decs', lrefs) = processDecs decs
+      in
+        (Fun decs' $ applyRef lrefs s', refs)
+    Sum decs s ->
+      let (s', refs)     = go s
+          (decs', lrefs) = processDecs decs
+      in
+        (Sum decs' $ applyRef lrefs s', refs)
+    Tensor s1 s2 ->
+      let (s1', refs1) = go s1
+          (s2', refs2) = go s2
+      in
+        (Tensor s1' s2', combineRefs refs1 refs2)
+    Compose s1 s2 ->
+      let (s1', refs1) = go s1
+          (s2', refs2) = go s2
+      in
+        (Compose s1' s2', combineRefs refs1 refs2)
+    Dagger s -> let (s', refs) = go s in (Dagger s', refs)
+    _ -> (sexpr, Nothing)
 
 {- Semantic checks -}
 

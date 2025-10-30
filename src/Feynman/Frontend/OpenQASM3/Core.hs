@@ -36,7 +36,7 @@ data Annotation a =
     | Pre [(AccessPath a,Expr a)]
     | Post [(AccessPath a,Expr a)]
     | Triple [(AccessPath a, Expr a)] [(AccessPath a, Expr a)]
-  deriving (Show)
+  deriving (Eq, Show)
 
 type Version    = (Int, Maybe Int)
 
@@ -63,7 +63,7 @@ data UOp = SinOp
          | NegOp -- ~, !
          | UMinusOp -- -
          | PopcountOp -- popcount
-         deriving (Show)
+         deriving (Eq, Show)
 
 -- | Binary operators
 data BinOp = AndOp -- &, &&
@@ -86,7 +86,7 @@ data BinOp = AndOp -- &, &&
            | ModOp -- %
            | PowOp -- **
            | ConcatOp -- ++, not used in openQASM 3 spec
-           deriving (Show)
+           deriving (Eq, Show)
 
 
 -- | OpenQASM 3 types. Arrays are currently unsupported
@@ -107,8 +107,6 @@ data TypeExpr' a = TCReg  a
                  | TRange (TypeExpr' a)
                  | TGate { numCargs :: Int, numQargs :: Int }
                  | TProc { argTypes :: [TypeExpr' a], returnType :: Maybe (TypeExpr' a) }
-                 -- Spec-specific
-                 | TRefined (TypeExpr' a) a
                  deriving (Show, Eq)
 
 type TypeExpr a = TypeExpr' (Expr a)
@@ -134,12 +132,12 @@ asTypeExpr a typ = case typ of
 -- | Classifies types as numeric
 isNumeric :: TypeExpr' a -> Bool
 isNumeric typeexpr = case typeexpr of
-  TUInt  _ -> True
-  TInt   _ -> True
-  TFloat _ -> True
-  TAngle _ -> True
-  TCmplx _ -> True
-  _        -> False
+  TUInt  _      -> True
+  TInt   _      -> True
+  TFloat _      -> True
+  TAngle _      -> True
+  TCmplx _      -> True
+  _             -> False
 
 isQuantum :: TypeExpr' a -> Bool
 isQuantum typeexpr = case typeexpr of
@@ -160,28 +158,28 @@ isBitvec typeexpr = case typeexpr of
 -- | Classifies types as comparable
 isComparable :: TypeExpr' a -> Bool
 isComparable typeexpr = case typeexpr of
-  TCReg i  -> True
-  TBool    -> True
-  TUInt  _ -> True
-  TInt   _ -> True
-  TFloat _ -> True
-  TAngle _ -> True
-  _        -> False
+  TCReg i       -> True
+  TBool         -> True
+  TUInt  _      -> True
+  TInt   _      -> True
+  TFloat _      -> True
+  TAngle _      -> True
+  _             -> False
 
 -- | Classifies types as indexable
 isIndexable :: Type -> Bool
 isIndexable typ = case typ of
-  TCReg _  -> True
-  TQReg _  -> True
-  TInt _   -> True
-  TUInt _  -> True
-  TAngle _ -> True
-  _        -> False
+  TCReg _       -> True
+  TQReg _       -> True
+  TInt _        -> True
+  TUInt _       -> True
+  TAngle _      -> True
+  _             -> False
 
 -- | Access paths. Either a variable or an index into a register/bit array
 data AccessPath a = AVar a ID
                   | AIndex a ID (Expr a)
-                  deriving (Show)
+                  deriving (Eq, Show)
 
 instance Annotated AccessPath where
   getAnnotation (AVar a _) = a
@@ -196,7 +194,7 @@ exprFromAP (AIndex a var expr) = EIndex a (EVar a var) expr
 data Modifier a = MCtrl a Bool (Maybe (Expr a))
                 | MInv a
                 | MPow a (Expr a)
-                deriving (Show)
+                deriving (Eq, Show)
 
 instance Annotated Modifier where
   getAnnotation (MCtrl a _ _) = a
@@ -229,7 +227,7 @@ data Expr a = EVar a ID
             | Tensor a (Expr a) (Expr a)
             | Compose a (Expr a) (Expr a)
             | Dagger a (Expr a)
-            deriving (Show)
+            deriving (Eq, Show)
 
 instance Annotated Expr where
   getAnnotation expr = case expr of
@@ -261,7 +259,7 @@ data Decl a =
   | DGate { gid :: ID, gparams :: [(ID, TypeExpr a)], gqargs :: [ID], gbody :: Stmt a }
   | DExtern { eid :: ID, eparams :: [(TypeExpr a)], ereturns :: Maybe (TypeExpr a) }
   | DAlias { aid :: ID, aexps :: [(Expr a)] }
-  deriving (Show)
+  deriving (Eq, Show)
 
 -- | Statements
 data Stmt a =
@@ -282,10 +280,10 @@ data Stmt a =
   | SWhile a (Expr a) (Stmt a)
   | SAnnotated a [Annotation a] (Stmt a)
   | SPragma a String
-  deriving (Show)
+  deriving (Eq, Show)
 
 -- | Top level of an openQASM3 AST
-data Prog a = Prog Version [Stmt a] deriving (Show)
+data Prog a = Prog Version [Stmt a] deriving (Eq, Show)
 
 {- Utilities -}
 
@@ -472,7 +470,6 @@ typeFromSpec :: a -> Spec.Type -> TypeExpr a
 typeFromSpec x Spec.Bit = TBool
 typeFromSpec x (Spec.Reg e) = TCReg (exprFromSpec x e)
 typeFromSpec x (Spec.UInt e) = TUInt . Just $ exprFromSpec x e
-typeFromSpec x (Spec.Refined t e) = TRefined (typeFromSpec x t) (exprFromSpec x e)
 
 accessPathFromSpec :: a -> Spec.SExpr -> AccessPath a
 accessPathFromSpec x (Spec.Var i Nothing) = AVar x i
@@ -728,7 +725,7 @@ translateAnnotations nodes = case nodes of
   [] -> return []
   where 
     translateAssertions c assertions = 
-      fmap (\(Spec.Equals e1 e2) -> (accessPathFromSpec c e1,exprFromSpec c e2)) assertions
+      fmap ((\(Spec.Equals e1 e2) -> (accessPathFromSpec c e1,exprFromSpec c e2)) . Spec.eraseRefinements) assertions
 
 -- | Translation of Annotations
 translateAnnotation :: S.ParseNode -> Either ErrMsg (Annotation S.SourceRef)
@@ -741,7 +738,7 @@ translateAnnotation node = case node of
   _  -> Left (Err $ "Fatal: malformed annotation node (" ++ show node ++ ")")
   where 
     translateAssertions c assertions = 
-      fmap (\(Spec.Equals e1 e2) -> (accessPathFromSpec c e1,exprFromSpec c e2)) assertions
+      fmap ((\(Spec.Equals e1 e2) -> (accessPathFromSpec c e1,exprFromSpec c e2)) . Spec.eraseRefinements) assertions
 
 
 -- | Translation of Arguments
