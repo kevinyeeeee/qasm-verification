@@ -2,9 +2,7 @@ include "stdgates.inc";
 
 @pre    msg             == |ψ⟩
         (alice, bob)    == sum{x} |x,x>
-@post   msg             == |0>
-        alice           == |0>
-        bob             == |ψ>
+@post   bob             == |ψ>
 def teleportation (qubit msg, qubit alice, qubit bob) {
     // msg    = qubit carrying the unknown state |ψ⟩ to be teleported
     // alice  = Alice's half of the Bell pair (entangled with bob)
@@ -13,12 +11,6 @@ def teleportation (qubit msg, qubit alice, qubit bob) {
     h msg;
     bit m0 = measure msg;
     bit m1 = measure alice;
-    if (m1 == 1){
-        x alice;
-        x bob;
-    }
-    if (m0 == 1){
-        x msg;
-        z bob;
-    }
+    if (m1 == 1){ x bob; }
+    if (m0 == 1){ z bob; }
 }
