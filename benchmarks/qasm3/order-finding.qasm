@@ -382,7 +382,7 @@ def period(uint[n] a, uint N)-> uint{
   return pow
 }
 
-@pre control      ==  |0  uint[acc]> 
+@pre control      ==  |0: uint[acc]> 
   && target       ==  |1: uint[n]>
   && CONST_N      ==  |0: uint[n]>
   && CONST_TN     ==  |0: uint[n]>

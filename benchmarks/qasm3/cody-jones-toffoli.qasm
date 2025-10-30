@@ -1,13 +1,13 @@
 include "stdgates.inc";
 
-// @pre    a   == |x>
-//     &&  b   == |y>
-//     &&  c   == |z>
-//     &&  anc == |0>
-// @post   a   == |x>
-//     &&  b   == |y>
-//     &&  c   == |z+xy>
-//     &&  anc == |0>  
+@pre    a   == |x>
+    &&  b   == |y>
+    &&  c   == |z>
+    &&  anc == |0>
+@post   a   == |x>
+    &&  b   == |y>
+    &&  c   == |z+x*y>
+    &&  anc == |0>  
 def cj_tof (qubit a, qubit b, qubit c, qubit anc) {
     h c;
     cx a, anc;
