@@ -28,7 +28,7 @@ data UOp = Neg | Wt | Exp | Sqrt deriving (Show)
 --
 --   The literals 0 and 1 are overloaded as both bits and
 --   integers
-data Type = Bit | Reg SExpr | Refined Type SExpr deriving Show
+data Type = Bit | Reg SExpr | UInt SExpr | Refined Type SExpr deriving Show
 
 -- | Sum-over-path expressions
 data SExpr = Var ID (Maybe SExpr)

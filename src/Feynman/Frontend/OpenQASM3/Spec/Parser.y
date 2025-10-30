@@ -64,7 +64,7 @@ type : basetype '|' refinement { Refined $1 $3 }
 
 basetype : bit               { Bit }
          | bit '[' expr ']'  { Reg $3 }
-         | uint '[' expr ']' { Reg $3 }
+         | uint '[' expr ']' { UInt $3 }
 
 assertions : assertion                { [$1] }
            | assertions '&' assertion { $1 ++ [$3] }
@@ -72,6 +72,7 @@ assertions : assertion                { [$1] }
 assertion : sexprs '=' sexprs { Equals $1 $3 }
 
 sexprs : sexpr            { $1 }
+       | '(' sexprs ')'    { $2 }
        | sexprs ',' sexpr { Tensor $1 $3 }
 
 sexpr : expr                    { $1 }
@@ -96,7 +97,7 @@ refinement3 : '(' refinement ')' { $2 }
             | expr geq expr      { BExp $1 GreaterEq $3 }
 
 expr : term          { $1 }
-     | expr '+' term { BExp $1 Plus $3 }
+     | sexprs '+' sexprs { BExp $1 Plus $3 }
      | expr '-' term { BExp $1 Minus $3 }
      | expr '%' term { BExp $1 Mod $3 }
      | expr or term { BExp $1 Or $3 }
