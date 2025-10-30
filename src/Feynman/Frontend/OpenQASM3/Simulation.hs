@@ -471,7 +471,7 @@ verifyDef pre post binds body = do
   where
     checkPost binds (Env ps _ _ _) =
       let (Env ps' _ _ _) = execState (g post binds) (initEnv True) in
-        error $ show ps ++ "   " ++ show ps'
+        ps ~~= ps'
     setUpPre binds = return $ execState (g pre binds) (initEnv True)
     g conds binds    = forM binds (\(id, typ) -> do
       initKet <- y conds (id, typ)
