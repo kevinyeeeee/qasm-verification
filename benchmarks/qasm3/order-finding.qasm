@@ -18,6 +18,7 @@ qubit[n] anc_reg_2;
 qubit anc_1;
 qubit anc_2;
 qubit anc_3;
+bit[n] target_value=0;              // measured target value
 bit[n] out=0;                       // Initialize classical output register.
 
 @pre    q ==  |x  :uint[n]>
@@ -287,7 +288,7 @@ def ctrl_mul_mod_N_in_place(
   ctrl_mul_mod_N_oo_place((N - ainv) % N, c, X, Y, CONST_N, CONST_TN, A, anc, f_1, f_2);
 }
 
-@pre control      ==  |0:  uint[acc]> 
+@pre control      ==  |0: uint[acc]> 
   && target       ==  |1: uint[n]>
   && CONST_N      ==  |0: uint[n]>
   && CONST_TN     ==  |0: uint[n]>
@@ -329,7 +330,7 @@ def prepare_period_superposition(
   }
 }
 
-@pre control      ==  |0  uint[acc]> 
+@pre control      ==  |0: uint[acc]> 
   && target       ==  |1: uint[n]>
   && CONST_N      ==  |0: uint[n]>
   && CONST_TN     ==  |0: uint[n]>
@@ -340,7 +341,12 @@ def prepare_period_superposition(
   && r            == period(a, N)
   && (2^acc) %r   == 0
 @post 
-  control         ==  1/sqrt(r) * sum{l=0}^{r-1}|l* 2^{acc}/r>
+  // control         ==  1/sqrt(r) * sum{l=0}^{r-1}|l* 2^{acc}/r>
+     m : uint[acc]
+  && 0 <= m       &&  m < r
+  && control      ==  1/sqrt(2^acc/r) * sum{l:uint[acc] | l<2^acc/r}|m + l*r>
+  && target_value ==  a^m % N
+  && target       ==  |target_value>
   && CONST_N      ==  |0>
   && CONST_TN     ==  |0>
   && anc_1        ==  |0>
@@ -356,7 +362,8 @@ def period_phase_estimation(
     qubit[n] CONST_TN,
     qubit anc_1, 
     qubit anc_2, 
-    qubit anc_3 
+    qubit anc_3, 
+    bit[n] target_value
   ){
   prepare_period_superposition(
     a,
@@ -369,6 +376,7 @@ def period_phase_estimation(
     anc_2,
     anc_3,
   );
+  target_value = measure target;
   iqft(control);
 }
 
@@ -394,7 +402,7 @@ def period(uint[n] a, uint N)-> uint{
   && (2^acc) %r   == 0
 @post 
   l:uint[n]
-  && out          ==  |l*2^acc*r>
+  && out          ==  |l*2^acc/r>
   && control      ==  |out>
   && CONST_N      ==  |0>
   && CONST_TN     ==  |0>
