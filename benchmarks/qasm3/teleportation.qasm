@@ -1,6 +1,6 @@
 include "stdgates.inc";
 
-@pre    msg             == |ψ⟩
+@pre    msg             == |ψ>
         (alice, bob)    == sum{x} |x,x>
 @post   bob             == |ψ>
 def teleportation (qubit msg, qubit alice, qubit bob) {
