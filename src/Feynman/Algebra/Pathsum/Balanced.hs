@@ -849,7 +849,7 @@ plus sop sop'
         b = inDeg sop
         c = outDeg sop
         d = pathVars sop + 1
-        e = (lift $ 1 + z)*(phasePoly sop) + (lift z)*(phasePoly sop')
+        e = phasePoly sop + (lift z)*(phasePoly sop' - phasePoly sop)
         f = map (\(a,b) -> (1 + z)*a + z*b) $ zip (outVals sop) (outVals sop')
 
       pump sop k = foldr (\_ -> (<> unitsum)) sop $ replicate k ()
