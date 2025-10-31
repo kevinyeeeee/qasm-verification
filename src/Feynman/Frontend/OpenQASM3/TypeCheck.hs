@@ -124,8 +124,8 @@ defaultType (ConsProc cs mc) = do
   ts <- mapM defaultType cs
   mt <- mapM defaultType mc
   return (TProc ts mt)
-defaultType ConsTop = do
-  logMsg "I'm disallowing this! It's just too unconstrained";
+defaultType ConsTop = --do
+--  logMsg "I'm disallowing this! It's just too unconstrained";
   return TUnit
 
 toConstraint :: Type -> TypeConstraints
@@ -438,15 +438,12 @@ tcDecl decl = case decl of
     return  $ DDef var (map (fmap asTypeExpr') params) (fmap asTypeExpr' ret) body
 
   DGate var cparams qparams body -> do
-    let (ids,types) = unzip cparams
-    paramTypes <- mapM resolveType types
-    let cparams = zip ids paramTypes
     let fTyp = TGate (length cparams) (length qparams)
-    scopes <- openProcScope $ [(var,fTyp)] ++ cparams ++ (zip qparams $ repeat TQBit)
+    scopes <- openProcScope $ [(var,fTyp)] ++ (zip cparams $ repeat (TAngle Nothing)) ++ (zip qparams $ repeat TQBit)
     body <- tcStmt body
     closeProcScope scopes
     assign var (constType fTyp)
-    return  $ DGate var (map (fmap asTypeExpr') cparams) qparams body
+    return  $ DGate var cparams qparams body
 
   DExtern var params ret -> do
     params <- mapM resolveType params
@@ -587,7 +584,7 @@ tcAnnotation stmt (Triple pre post) = case stmt of
   SDeclare _ decl -> 
     let params = case decl of
           DDef  {dparams = p} -> p
-          DGate {gparams = p, gqargs = args} -> p ++ zip args (repeat TQBit)
+          DGate {gparams = p, gqargs = args} -> zip p (repeat $ TAngle Nothing) ++ zip args (repeat TQBit)
     in do
     let (ids, typeExprs) = unzip params
     types <- mapM resolveType typeExprs
@@ -691,6 +688,8 @@ tcExpr expr0 = case expr0 of
     expr' <- tcExpr expr'
     case tcBOp (typeof expr) bop (typeof expr') of
       Nothing -> do
+        logMsg $ show expr ++ ": " ++ show (typeof expr)
+        logMsg $ show expr' ++ ": " ++ show (typeof expr')
         logMsg $ "Type error at (" ++ show loc ++ ") in " ++ prettyPrintExpr expr0
         return $ EBOp (getAnnotation expr) expr bop expr'
       Just rTyp ->

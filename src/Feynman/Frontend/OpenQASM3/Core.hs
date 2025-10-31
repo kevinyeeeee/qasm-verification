@@ -256,7 +256,7 @@ instance Annotated Expr where
 data Decl a =
     DVar { vid :: ID, typ :: TypeExpr a, val :: Maybe (Expr a), isConst :: Bool }
   | DDef { did :: ID, dparams :: [(ID, TypeExpr a)], dreturns :: Maybe (TypeExpr a), dbody :: Stmt a }
-  | DGate { gid :: ID, gparams :: [(ID, TypeExpr a)], gqargs :: [ID], gbody :: Stmt a }
+  | DGate { gid :: ID, gparams :: [ID], gqargs :: [ID], gbody :: Stmt a }
   | DExtern { eid :: ID, eparams :: [(TypeExpr a)], ereturns :: Maybe (TypeExpr a) }
   | DAlias { aid :: ID, aexps :: [(Expr a)] }
   deriving (Eq, Show)
@@ -354,7 +354,7 @@ prettyPrintDecl decl = case decl of
     r = maybe "" ((" -> " ++) . prettyPrintType) ret
     b = map ("  " ++) $ prettyPrintStmt body
   DGate var cp qp body -> ["gate " ++ var ++ "(" ++ p ++ ") " ++ q ++ "{"] ++ b ++ ["}"] where
-    p = intercalate "," . map (\(id,typ) -> prettyPrintType typ ++ " " ++ id) $ cp
+    p = intercalate "," cp
     q = intercalate "," qp
     b = map ("  " ++) $ prettyPrintStmt body
   DExtern var params ret -> ["extern " ++ var ++ "(" ++ p ++ ")" ++ r ++ ";"] where
@@ -850,8 +850,7 @@ translateStmt node = case node of
       node -> inLst translateIdent node
     qargs <- inLst translateIdent qargnodes
     body <- translateStmt stmt
-    let args = zip cargs (repeat (TAngle Nothing))
-    return $ SDeclare c (DGate id args qargs body)
+    return $ SDeclare c (DGate id cargs qargs body)
 
   S.Node S.GateCallStmt [modnodes, idnode, paramnodes, _, argnodes] c -> do
     modifiers <- inLst translateModifier modnodes
