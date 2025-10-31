@@ -127,6 +127,7 @@ import Feynman.Frontend.OpenQASM3.Syntax
     DOUBLE_LESS                             { Lexeme _ DoubleLessToken }
     DOUBLE_GREATER                          { Lexeme _ DoubleGreaterToken }
     --
+    PiLiteral                               { Lexeme _ (PiLiteralToken _) }
     ImaginaryLiteral                        { Lexeme _ (ImaginaryLiteralToken _) }
     BinaryIntegerLiteral                    { Lexeme _ (BinaryIntegerLiteralToken _) }
     OctalIntegerLiteral                     { Lexeme _ (OctalIntegerLiteralToken _) }
@@ -483,6 +484,8 @@ expression :: { ParseNode {- Expression -} }
                                        in Node (IntegerLiteral (tokenIntegerVal tok) tok) [] (lsr $1) }
     | FloatLiteral                  { let tok = lexemeToken $1
                                        in Node (FloatLiteral (tokenFloatVal tok) tok) [] (lsr $1) }
+    | PiLiteral                     { let tok = lexemeToken $1
+                                       in Node (PiLiteral (tokenFloatVal tok) tok) [] (lsr $1) }
     | ImaginaryLiteral              { let tok = lexemeToken $1
                                        in Node (ImaginaryLiteral (tokenFloatVal tok) tok) [] (lsr $1) }
     | BooleanLiteral                { let tok = lexemeToken $1

@@ -172,7 +172,8 @@ data Token
   | DoubleGreaterToken
   | PopcountToken
   | --
-    ImaginaryLiteralToken String
+    PiLiteralToken String
+  | ImaginaryLiteralToken String
   | BinaryIntegerLiteralToken String
   | OctalIntegerLiteralToken String
   | DecimalIntegerLiteralToken String
@@ -256,6 +257,7 @@ data Tag
   | Identifier {identifierName :: String, identifierTok :: Token} -- []
   | IntegerLiteral {integerVal :: Integer, integerTok :: Token} -- []
   | FloatLiteral {floatVal :: Double, floatTok :: Token} -- []
+  | PiLiteral {piVal :: Double, piTok :: Token} -- []
   | ImaginaryLiteral {imaginaryVal :: Double, imaginaryTok :: Token} -- []
   | BooleanLiteral {booleanVal :: Bool, booleanTok :: Token} -- []
   | BitstringLiteral {bitstringVal :: [Bool], bitstringTok :: Token} -- []
@@ -424,6 +426,7 @@ pretty (Node CallExpr [ident, params] _) = pretty ident ++ "(" ++ prettyList par
 pretty (Node (Identifier _ tok) [] _) = tokenStr tok
 pretty (Node (IntegerLiteral _ tok) [] _) = tokenStr tok
 pretty (Node (FloatLiteral _ tok) [] _) = tokenStr tok
+pretty (Node (PiLiteral _ tok) [] _) = tokenStr tok
 pretty (Node (ImaginaryLiteral _ tok) [] _) = tokenStr tok
 pretty (Node (BooleanLiteral _ tok) [] _) = tokenStr tok
 pretty (Node (BitstringLiteral _ tok) [] _) = tokenStr tok
@@ -505,6 +508,7 @@ parenthesizeNonTrivialExpr expr =
     isTrivialExpr (Node (Identifier _ _) [] _) = True
     isTrivialExpr (Node (IntegerLiteral _ _) [] _) = True
     isTrivialExpr (Node (FloatLiteral _ _) [] _) = True
+    isTrivialExpr (Node (PiLiteral _ _) [] _) = True
     isTrivialExpr (Node (ImaginaryLiteral _ _) [] _) = True
     isTrivialExpr (Node (BooleanLiteral _ _) [] _) = True
     isTrivialExpr (Node (BitstringLiteral _ _) [] _) = True
@@ -534,6 +538,7 @@ tokenIntegerVal tok =
 
 tokenFloatVal :: Token -> Double
 tokenFloatVal (FloatLiteralToken str) = case readFloat str of [(val, "")] -> val
+tokenFloatVal (PiLiteralToken str) = case readFloat str of [(val, "pi")] -> val
 tokenFloatVal (ImaginaryLiteralToken str) = case readFloat str of [(val, "im")] -> val
 
 tokenBooleanVal :: Token -> Bool
@@ -676,6 +681,7 @@ tokenStr LessEqualsToken = "<="
 tokenStr GreaterEqualsToken = ">="
 tokenStr DoubleLessToken = "<<"
 tokenStr DoubleGreaterToken = ">>"
+tokenStr (PiLiteralToken str) = str
 tokenStr (ImaginaryLiteralToken str) = str
 tokenStr (BinaryIntegerLiteralToken str) = str
 tokenStr (OctalIntegerLiteralToken str) = str
@@ -768,6 +774,10 @@ floatLiteralNode :: Double -> Node Tag ()
 -- TODO "show num" probably compatible enough but this should be checked
 floatLiteralNode val =
   node (FloatLiteral {floatVal = val, floatTok = FloatLiteralToken (show val)}) []
+
+piLiteralNode :: Double -> Node Tag ()
+piLiteralNode val =
+  node (PiLiteral {piVal = val, piTok = PiLiteralToken (show val ++ "pi")}) []
 
 imaginaryLiteralNode :: Double -> Node Tag ()
 imaginaryLiteralNode val =

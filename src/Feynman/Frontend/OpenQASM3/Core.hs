@@ -661,6 +661,8 @@ translateExpr node = case node of
 
   S.Node (S.FloatLiteral r _) [] c -> return $ EFloat c r
 
+  S.Node (S.PiLiteral r _) [] c -> return $ EPi c
+
   S.Node (S.ImaginaryLiteral r _) [] c -> return $ ECmplx c (0 :+ r)
 
   S.Node (S.BooleanLiteral b _) [] c -> return $ EBool c b

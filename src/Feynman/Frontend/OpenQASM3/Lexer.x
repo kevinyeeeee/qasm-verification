@@ -47,6 +47,7 @@ $star                   = [\*]
                         )
 
 
+@piLiteral              = "pi"
 @imaginaryLiteral       = @floatLiteral $inlineSpace* "im"
 
 @timeUnit               = "dt" | "ns" | "us" | "µs" | "ms" | "s"
@@ -187,6 +188,8 @@ OpenQASM3 :-
 <default_mode>          "<<"                    { makeLexeme DoubleLessToken }
 <default_mode>          ">>"                    { makeLexeme DoubleGreaterToken }
 -- <default_mode>          ">>" | "<<"             { makeLexemeCat BitshiftOperatorToken }
+<default_mode>          @piLiteral / ~$generalIdCharacter
+                                                { makeLexemeCat PiLiteralToken }
 <default_mode>          @imaginaryLiteral / ~$generalIdCharacter
                                                 { makeLexemeCat ImaginaryLiteralToken }
 <default_mode>          "0" [bB] ([01] "_"?)* [01]
