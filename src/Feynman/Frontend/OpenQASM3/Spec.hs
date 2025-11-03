@@ -11,6 +11,8 @@ module Feynman.Frontend.OpenQASM3.Spec where
 
 import Control.Monad
 
+import Data.List
+
 import Feynman.Core (ID)
 import Feynman.Algebra.Base (Dyadic(..), DyadicRational, DMod2)
 
@@ -19,9 +21,9 @@ import Feynman.Algebra.Base (Dyadic(..), DyadicRational, DMod2)
 data BOp = Plus | Minus | Times | Div | Mod | Pow
          | LShift | RShift | LRot | RRot
          | Equal | LessThan | LessEq | GreaterThan | GreaterEq | And | Or
-         deriving (Show)
+         deriving (Eq, Show)
 
-data UOp = Neg | Wt | Exp | Sqrt deriving (Show)
+data UOp = Neg | Wt | Exp | Sqrt deriving (Eq, Show)
 
 -- | Classical types which can be in superposition
 --
@@ -30,7 +32,10 @@ data UOp = Neg | Wt | Exp | Sqrt deriving (Show)
 --
 --   The literals 0 and 1 are overloaded as both bits and
 --   integers
-data Type = Bit | Reg SExpr | UInt SExpr | Refined Type SExpr deriving Show
+data Type = Bit | Reg SExpr | UInt SExpr | Refined Type SExpr deriving (Eq, Show)
+
+-- | L Values
+data LVal = LVal ID (Maybe Int) deriving (Eq, Show)
 
 -- | Sum-over-path expressions
 data SExpr = Var ID (Maybe SExpr)
@@ -40,6 +45,7 @@ data SExpr = Var ID (Maybe SExpr)
            | Pi
            | BExp SExpr BOp SExpr
            | UExp UOp SExpr
+           | Call ID [SExpr]
            -- Sum terms
            | Ket SExpr
            | Fun [(ID,Maybe Type)] SExpr
@@ -47,19 +53,54 @@ data SExpr = Var ID (Maybe SExpr)
            | Tensor SExpr SExpr
            | Compose SExpr SExpr
            | Dagger SExpr
-           deriving (Show)
+           deriving (Eq, Show)
 
 -- | Assertions. Conjunctions of assertions are represented as lists
-data Assertion = Equals SExpr SExpr deriving (Show)
+data Assertion = Pointsto [LVal] SExpr
+               | Pure SExpr
+               | Discard [LVal]
+               deriving (Eq, Show)
+
+-- | Assertions in normal form
+data NFAssertion = NFAssertion {
+  qaps     :: [LVal],
+  qstate   :: SExpr,
+  preds    :: SExpr,
+  refines  :: SExpr,
+  discards :: [LVal]
+  } deriving (Eq, Show)
+
+-- | The empty assertion
+emp :: NFAssertion
+emp = NFAssertion [] (ILit 1) (ILit 1) (ILit 1) []
 
 {- Transformations -}
 
--- | Erases all refinements within an assertion
-eraseRefinements :: Assertion -> Assertion
-eraseRefinements (Equals lval rval) = Equals lval rval' where
-  rval' = case go rval of
-    (rval, Nothing)   -> rval
-    (rval, Just refs) -> Tensor rval refs
+-- | Normalizes all assertions
+normalizeAssertions :: [Assertion] -> NFAssertion
+normalizeAssertions = eraseRefinements . foldr go emp where
+  go assrt nf = case assrt of
+    Pointsto aps exprs ->
+      if not (intersect aps (qaps nf ++ discards nf) == [])
+      then error "Assertion references same qubit twice"
+      else nf { qaps = aps ++ (qaps nf),
+                qstate = if (qstate nf) == ILit 1 then exprs else Tensor exprs (qstate nf) }
+    Pure expr   ->
+      if (preds nf) == ILit 1
+      then nf { preds = expr }
+      else nf { preds = BExp expr And (preds nf) }
+    Discard aps ->
+      if not (intersect aps (qaps nf ++ discards nf) == [])
+      then error "Assertion references same qubit twice"
+      else nf { discards = aps ++ (discards nf) }
+
+  eraseRefinements nf = case collectRefinements (qstate nf) of
+    (qstate', Nothing) -> nf { qstate = qstate' }
+    (qstate', Just p)  -> nf { qstate = Tensor qstate' p, refines = p }
+
+-- | Collects all refinements on free variables
+collectRefinements :: SExpr -> (SExpr, Maybe SExpr)
+collectRefinements = go where
 
   sumOfRef exp = Sum [("%%%", Just Bit)] $ UExp Exp exponent where
     exponent = BExp (Var "%%%" Nothing) And (UExp Neg exp)
