@@ -474,7 +474,7 @@ verifyDef' pre post binds body = do
   where
     checkPost ps globals =
       let ps' = evalState (do { applyPost; discardExcept outPaths }) $ (initEnv True) { globals = globals } in
-        if ps ~~= ps' then
+        if grind ps ~~= grind ps' then
           Trace.trace ("verification success: " ++ show (grind ps) ++ " " ++ show (grind ps')) (return ())
         else
           error $ "verification failed: " ++ show (grind ps) ++ " " ++ show (grind ps')
