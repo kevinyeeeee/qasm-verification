@@ -102,12 +102,14 @@ normalizeAssertions = eraseRefinements . foldr go emp where
     (qstate', Nothing) -> nf { qstate = qstate' }
     (qstate', Just p)  -> nf { qstate = Tensor qstate' p, refines = p }
 
+-- | Maps a Boolean expression to a path sum
+toPredicate :: SExpr -> SExpr
+toPredicate exp = Sum [("%%%", Just Bit)] $ UExp Exp exponent where
+  exponent = BExp (Var "%%%" Nothing) And (UExp Neg exp)
+
 -- | Collects all refinements on free variables
 collectRefinements :: SExpr -> (SExpr, Maybe SExpr)
 collectRefinements = go where
-
-  sumOfRef exp = Sum [("%%%", Just Bit)] $ UExp Exp exponent where
-    exponent = BExp (Var "%%%" Nothing) And (UExp Neg exp)
 
   combineRefs r1 r2 = case (r1, r2) of
     (Just r1', Just r2') -> Just $ Tensor r1' r2'
@@ -117,7 +119,7 @@ collectRefinements = go where
   collectRefs ty = case ty of
     Just (Refined ty exp) ->
       let (ty', refs) = collectRefs (Just ty) in
-        (ty', combineRefs (Just $ sumOfRef exp) refs)
+        (ty', combineRefs (Just $ toPredicate exp) refs)
     _               -> (ty, Nothing)
 
   processDecs :: [(ID, Maybe Type)] -> ([(ID, Maybe Type)], Maybe SExpr)

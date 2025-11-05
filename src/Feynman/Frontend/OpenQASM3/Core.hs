@@ -727,8 +727,12 @@ translateAnnotations nodes = case nodes of
     return $ annot : rest
   [] -> return []
   where 
-    translateAssertions c assertions = 
-      fmap ((\(Spec.Pointsto lvl e2) -> (accessPathFromSpec c lvl,exprFromSpec c e2))) assertions
+    translateAssertions c = concatMap (go c)
+    go c (Spec.Pointsto lvl e) =
+      let (e', ref) = Spec.collectRefinements e in
+        [(accessPathFromSpec c lvl,exprFromSpec c (maybe e' (Spec.Tensor e') ref))]
+    go c (Spec.Discard e)       = []
+    so c (Spec.Pure e)          = [([], exprFromSpec c (Spec.toPredicate e))]
 
 -- | Translation of Annotations
 translateAnnotation :: S.ParseNode -> Either ErrMsg (Annotation S.SourceRef)
