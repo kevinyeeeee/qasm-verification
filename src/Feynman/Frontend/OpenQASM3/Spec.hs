@@ -41,6 +41,7 @@ data LVal = LVal ID (Maybe Int) deriving (Eq, Show)
 data SExpr = Var ID (Maybe SExpr)
            | VarDec ID Type
            | ILit Int
+           | BSLit String
            | RLit Double
            | Pi
            | BExp SExpr BOp SExpr
@@ -56,18 +57,18 @@ data SExpr = Var ID (Maybe SExpr)
            deriving (Eq, Show)
 
 -- | Assertions. Conjunctions of assertions are represented as lists
-data Assertion = Pointsto [LVal] SExpr
+data Assertion = Pointsto [SExpr] SExpr
                | Pure SExpr
-               | Discard [LVal]
+               | Discard [SExpr]
                deriving (Eq, Show)
 
 -- | Assertions in normal form
 data NFAssertion = NFAssertion {
-  qaps     :: [LVal],
+  qaps     :: [SExpr],
   qstate   :: SExpr,
   preds    :: SExpr,
   refines  :: SExpr,
-  discards :: [LVal]
+  discards :: [SExpr]
   } deriving (Eq, Show)
 
 -- | The empty assertion

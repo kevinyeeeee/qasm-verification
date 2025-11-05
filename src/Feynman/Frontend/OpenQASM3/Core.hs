@@ -31,11 +31,11 @@ type Location   = S.SourceRef
 
 data Annotation a = 
       Other (String,String)
-    | Assert [(AccessPath a,Expr a)]
+    | Assert [([AccessPath a],Expr a)]
     | Fn (Expr a,Expr a)
-    | Pre [(AccessPath a,Expr a)]
-    | Post [(AccessPath a,Expr a)]
-    | Triple [(AccessPath a, Expr a)] [(AccessPath a, Expr a)]
+    | Pre [([AccessPath a],Expr a)]
+    | Post [([AccessPath a],Expr a)]
+    | Triple [([AccessPath a], Expr a)] [([AccessPath a], Expr a)]
   deriving (Eq, Show)
 
 type Version    = (Int, Maybe Int)
@@ -471,9 +471,10 @@ typeFromSpec x Spec.Bit = TBool
 typeFromSpec x (Spec.Reg e) = TCReg (exprFromSpec x e)
 typeFromSpec x (Spec.UInt e) = TUInt . Just $ exprFromSpec x e
 
-accessPathFromSpec :: a -> Spec.SExpr -> AccessPath a
-accessPathFromSpec x (Spec.Var i Nothing) = AVar x i
-accessPathFromSpec x (Spec.Var i (Just e')) = AIndex x i (exprFromSpec x e')
+accessPathFromSpec :: a -> [Spec.SExpr] -> [AccessPath a]
+accessPathFromSpec x = map go where
+  go (Spec.Var i Nothing) = AVar x i
+  go (Spec.Var i (Just e')) = AIndex x i (exprFromSpec x e')
 
 exprFromSpec :: a -> Spec.SExpr -> Expr a
 exprFromSpec = efs
@@ -727,7 +728,7 @@ translateAnnotations nodes = case nodes of
   [] -> return []
   where 
     translateAssertions c assertions = 
-      fmap ((\(Spec.Equals e1 e2) -> (accessPathFromSpec c e1,exprFromSpec c e2)) . Spec.eraseRefinements) assertions
+      fmap ((\(Spec.Pointsto lvl e2) -> (accessPathFromSpec c lvl,exprFromSpec c e2))) assertions
 
 -- | Translation of Annotations
 translateAnnotation :: S.ParseNode -> Either ErrMsg (Annotation S.SourceRef)
@@ -740,7 +741,7 @@ translateAnnotation node = case node of
   _  -> Left (Err $ "Fatal: malformed annotation node (" ++ show node ++ ")")
   where 
     translateAssertions c assertions = 
-      fmap ((\(Spec.Equals e1 e2) -> (accessPathFromSpec c e1,exprFromSpec c e2)) . Spec.eraseRefinements) assertions
+      fmap ((\(Spec.Pointsto lvl e2) -> (accessPathFromSpec c lvl,exprFromSpec c e2))) assertions
 
 
 -- | Translation of Arguments
