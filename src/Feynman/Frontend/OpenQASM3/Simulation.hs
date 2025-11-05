@@ -211,26 +211,6 @@ renameKet :: Pathsum DMod2 -> Pathsum DMod2
 renameKet ps@(Pathsum _ _ _ _ p o) =
   ps { phasePoly = (rename renameFVar) p , outVals = map (rename renameFVar) o }
 
--- TODO: size redundant if list given. replace with Either?
-allocateQBits :: ID -> Int -> Maybe [SBool String] -> State Env Int
-allocateQBits v size init = do
-  offset <- getQWidth
-  modify $ allocateQ
-  return $ offset 
-  where
-    qbits                              = case init of
-      Nothing   -> ket [ofVar (varOfOffset v i) | i <- [0..size-1]]
-      Just list -> ket list
-    qbits'                             = case init of
-      Nothing   -> renameKet $ ket [ofVar (varOfOffset v i) | i <- [0..size-1]]
-      Just list -> renameKet (ket list)
-    allocateQ env@(Env ps _ _ density w) = env { pathsum = newPs, qwidth = w + size }
-      where
-        psSize   = outDeg ps
-        newOuts  = if density then qbits <> qbits' else qbits
-        embedded = embed newOuts psSize (\i -> i) (\i -> if i < size then i + w else i + 2*w)
-        newPs    = ps .> embedded
-
 allocateQType :: ID -> Pathsum DMod2 -> State Env Int
 allocateQType v qbits = do
   offset <- getQWidth
@@ -483,55 +463,69 @@ verifyAssert conds = error "TODO"
 verifyDef :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(ID, TypeExpr ElaboratedType)] -> Stmt ElaboratedType -> State Env ()
 verifyDef pre post binds body = do
   binds' <- traverse (\(a, x) -> (,) a <$> typeExprToType x) binds
+  verifyDef' pre post binds' body
+
+verifyDef' :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(ID, Type)] -> Stmt ElaboratedType -> State Env ()
+verifyDef' pre post binds body = do
   globals <- gets globals
-  preState <- setUpPre binds' globals
-  let ps = evalState (traceExcept outPaths) $ execState (simStmt 1 body) preState
-  checkPost binds' ps globals
+  let ps = evalState (do { applyPre; simStmt 1 body; traceExcept outPaths }) $ (initEnv True) { globals = globals }
+  checkPost ps globals
   where
-    (outPaths, _) = unzip post
-    checkPost binds ps globals =
-      let (Env ps' _ _ _ _) = execState (g post binds) ((initEnv True) {globals = globals}) in
+    checkPost ps globals =
+      let ps' = evalState (do { applyPost; discardExcept outPaths }) $ (initEnv True) { globals = globals } in
         if ps ~~= ps' then
-          Trace.trace ("verification success:" ++ show ps ++ " " ++ show ps') (return ())
+          Trace.trace ("verification success:" ++ show (grind ps) ++ " " ++ show (grind ps')) (return ())
         else
-          error $ "verification failed: " ++ show (grind ps) ++ " " ++ show ps'
-    setUpPre binds globals = return $ execState (g pre binds) ((initEnv True) {globals = globals})
-    g conds binds    = forM binds (\(id, typ) -> do
-      initKet <- y conds (id, typ)
-      declareWithPS id typ initKet )
+          error $ "verification failed: " ++ show (grind ps) ++ " " ++ show (grind ps')
 
-    y :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> (ID, Type) -> State Env (Pathsum DMod2)
-    y conds (aid, typ) = case List.find ( \(a, _) -> case a of
-                                          AVar _ id -> aid == id
-                                          AIndex _ id _ -> aid == id ) conds of
-      Just (_, e) -> case typ of
-        TQBit   -> simKet e
-        TQReg _ -> simKet e
-        TBool   -> liftM (ket . (\a -> [a])) (exprToBoolPoly e)
-        TCReg n -> do
-          p <- exprToBoolPolyList e
-          return $ ket (setWidth p n)
-        TUInt _ -> liftM ket (exprToBoolPolyList e)
-      Nothing     -> case typ of
-        TQBit   -> return $ ket [ ofVar aid ]
-        TBool   -> return $ ket [ ofVar aid ]
-        TQReg n -> do
-            psList <- mapM (yy conds) [ ((aid, i), TQBit) | i <- [0..n-1] ]
-            return $ foldr1 (<>) psList
-        TCReg n -> do
-            psList <- mapM (yy conds) [ ((aid, i), TBool) | i <- [0..n-1] ]
-            return $ foldr1 (<>) psList
-        TUInt (Just n) -> do
-            psList <- mapM (yy conds) [ ((aid, i), TBool) | i <- [0..n-1] ]
-            return $ foldr1 (<>) psList
+    (outPaths, _) = unzip post
+    declareAll = forM binds (\(id, typ) -> declareSymbolic id typ Nothing)
+    applyCond (path, expr) = do
+      let bra = evalBra path
+      initKet <- z' path expr
+      let t = bra <> initKet
+      offsets <- offsetListOfPath path
+      qwidth <- getQWidth
+      let offsets' = if isQuantum (typeof path) then offsets ++ (map (+qwidth) offsets) else offsets
+      env <- get
+      --Trace.trace (show (grind t) ++ " " ++ show path ++ " " ++ show expr) (return ())
+      modify $ \env -> env { pathsum = applyOn t offsets' (pathsum env) }
 
-    yy conds ((aid, i), typ) = case List.find ( \(a, _) -> case a of
-                                                AVar _ _ -> False
-                                                AIndex _ id (EInt _ j) -> aid == id && i == j ) conds of
-      Just (_, e) -> simKet e
-      Nothing     -> case typ of
-        TQBit -> return $ ket [ ofVar (varOfOffset aid i) ]
-        TBool -> return $ ket [ ofVar (varOfOffset aid i) ]
+    z' path expr = case typeof path of
+      TQBit   -> liftM (\x -> x <> conjugate (renameKet x)) $ simKet expr
+      TQReg _ -> liftM (\x -> x <> conjugate (renameKet x)) $ simKet expr
+      TBool   -> liftM (ket . (\a -> [a])) (exprToBoolPoly expr)
+      TCReg n -> liftM (\y -> ket (setWidth y n)) (exprToBoolPolyList expr)
+      TUInt _ -> liftM ket (exprToBoolPolyList expr)
+      TInt  _ -> liftM ket (exprToBoolPolyList expr)
+      e -> error $ show expr
+
+    applyPre = do 
+      declareAll
+      mapM applyCond pre
+
+    applyPost = do
+      declareAll
+      mapM applyCond post
+
+-- | takes access paths to symbolic state destructor (bra) 
+evalBra :: AccessPath ElaboratedType -> Pathsum DMod2
+evalBra path = dens . simA $ path
+  where
+    simA p = case p of
+      AVar typ aid            -> case ty typ of
+        TQBit          -> bra [ ofVar aid ]
+        TQReg n        -> bra [ ofVar (varOfOffset aid i) | i <- [0..n-1] ]
+        TCReg n        -> bra [ ofVar (varOfOffset aid i) | i <- [0..n-1] ]
+        TUInt (Just n) -> bra [ ofVar (varOfOffset aid i) | i <- [0..n-1] ]
+      AIndex typ aid (EInt _ i) -> case ty typ of
+        TQBit -> bra [ ofVar (varOfOffset aid i) ]
+        TBool -> bra [ ofVar (varOfOffset aid i) ]
+    dens = 
+      if isQuantum (typeof path) then
+        (\x -> x <> renameKet x)
+      else
+        (\x -> x)
 
 simKet :: Expr ElaboratedType -> State Env (Pathsum DMod2)
 simKet expr = case expr of
@@ -608,7 +602,9 @@ exprToBoolPolyList e = case e of
   EVar t vid -> case ty t of
     TCReg n -> return [ofVar (varOfOffset vid i) | i <- [0..n-1]]
     TUInt (Just n) -> return [ofVar (varOfOffset vid i) | i <- [0..n-1]]
-  EInt _ n   -> return $ bitVec' n
+  EInt t m   -> case ty t of
+    TUInt (Just n) -> return $ setWidth (bitVec' m) n
+    _              -> return $ bitVec' m
   x -> error $ show x
 
 sumOver :: [(ID, Maybe Type)] -> Pathsum DMod2 -> Pathsum DMod2
@@ -758,17 +754,17 @@ declareWithPS id typ ps = do
       TQBit   -> allocateQType
       TQReg _ -> allocateQType
 
-declareSymbolic :: ID -> Type -> Int -> Maybe [SBool String] -> State Env ()
-declareSymbolic id typ size init = declareWithPS id typ ps
+declareSymbolic :: ID -> Type -> Maybe [SBool String] -> State Env ()
+declareSymbolic id typ init = declareWithPS id typ ps
   where
     ps = case init of
       Just s -> ket s
       Nothing -> case typ of
-        TBool   -> ket [ofVar id]
-        TQBit   -> ket [ofVar id]
-        TCReg _ -> ket [ofVar (varOfOffset id i) | i <- [0..size-1]]
-        TUInt _ -> ket [ofVar (varOfOffset id i) | i <- [0..size-1]]
-        TQReg _ -> ket [ofVar (varOfOffset id i) | i <- [0..size-1]]
+        TBool             -> ket [ofVar id]
+        TQBit             -> ket [ofVar id]
+        TCReg size        -> ket [ofVar (varOfOffset id i) | i <- [0..size-1]]
+        TUInt (Just size) -> ket [ofVar (varOfOffset id i) | i <- [0..size-1]]
+        TQReg size        -> ket [ofVar (varOfOffset id i) | i <- [0..size-1]]
 
 declareScalar :: ID -> Type -> Maybe (Expr ElaboratedType) -> State Env ()
 declareScalar id typ maybeExpr = do
@@ -796,41 +792,41 @@ simDeclare :: Decl ElaboratedType -> State Env ()
 simDeclare decl = case decl of
   DVar vid typ maybeExpr const -> case typ of
     TBool   -> case maybeExpr of
-      Nothing -> declareSymbolic vid TBool 1 Nothing
+      Nothing -> declareSymbolic vid TBool Nothing
       Just e  -> do 
         v <- reduceExpr e
         case v of
-          VBool False -> declareSymbolic vid TBool 1 (Just [0])
-          VBool True  -> declareSymbolic vid TBool 1 (Just [1])
+          VBool False -> declareSymbolic vid TBool (Just [0])
+          VBool True  -> declareSymbolic vid TBool (Just [1])
     TCReg n -> do
       n' <- reduceExpr n
       case n' of
         VInt size -> case maybeExpr of
-          Nothing       -> declareSymbolic vid (TCReg size) size Nothing
+          Nothing       -> declareSymbolic vid (TCReg size) Nothing
           Just e        -> do 
             v <- reduceExpr e
             case v of
-              VInt j -> declareSymbolic vid (TCReg size) size (Just $ bitVec j size)
+              VInt j -> declareSymbolic vid (TCReg size) (Just $ bitVec j size)
         _   -> error $ "invalid register size"
     TQBit   -> case maybeExpr of
-      Nothing -> declareSymbolic vid TQBit 1 Nothing
+      Nothing -> declareSymbolic vid TQBit Nothing
       Just _  -> error $ "invalid value in qubit declaration"
     TQReg n -> do
       n' <- reduceExpr n
       case n' of
         VInt size -> case maybeExpr of
-          Nothing -> declareSymbolic vid (TQReg size) size Nothing
+          Nothing -> declareSymbolic vid (TQReg size) Nothing
           Just _  -> error $ "invalid qreg value"
         _         -> error $ "invalid register size"
     TUInt (Just n) -> do
       n' <- reduceExpr n
       case n' of
         VInt size -> case maybeExpr of
-          Nothing       -> declareSymbolic vid (TUInt $ Just size) size Nothing
+          Nothing       -> declareSymbolic vid (TUInt $ Just size) Nothing
           Just e        -> do 
             v <- reduceExpr e
             case v of
-              VInt j -> declareSymbolic vid (TUInt $ Just size) size (Just $ bitVec j size)
+              VInt j -> declareSymbolic vid (TUInt $ Just size) (Just $ bitVec j size)
         _   -> error $ "invalid register size"
     typ -> do
       newtyp <- typeExprToType typ
@@ -995,6 +991,34 @@ traceExcept paths = do
         (w, p) 
       else
         (w-1, traceOut i (i+w) p) )
+      (qwidth, ps) [0..qwidth-1]
+
+discardExcept :: [AccessPath ElaboratedType] -> State Env (Pathsum DMod2)
+discardExcept paths = do
+  let (qpaths, cpaths) = List.partition 
+        ( \p -> case typeof p of
+            TQBit   -> True
+            TQReg _ -> True
+            _ -> False
+        ) paths
+  qOffsets <- liftM concat $ mapM offsetListOfPath qpaths
+  cOffsets <- liftM concat $ mapM offsetListOfPath cpaths 
+  qwidth <- getQWidth
+  cwidth <- getCWidth
+  coffset <- getCOffset
+  ps <- gets pathsum
+  let ps' = discC cOffsets ps cwidth coffset
+  let (_, ps'') = discQ qOffsets ps' qwidth
+  return $ ps''
+  where
+    discC :: [Int] -> Pathsum DMod2 -> Int -> Int -> Pathsum DMod2
+    discC skips ps cwidth coffset = foldr discard ps [ j | j <- [coffset..coffset + cwidth-1]
+                                                         , j `notElem` skips ]
+    discQ skips ps qwidth = foldr (\i (w, p) -> 
+      if i `elem` skips then 
+        (w, p) 
+      else
+        (w-1, discard i . discard (i+w) $ p) )
       (qwidth, ps) [0..qwidth-1]
 
 simStmts :: [Stmt ElaboratedType] -> State Env ()

@@ -724,7 +724,7 @@ tcExpr expr0 = case expr0 of
     case typeof expr of
       TBool          -> return $ Ket (pureType TQBit) expr
       TCReg n        -> return $ Ket (pureType (TQReg n)) expr
-      TUInt (Just n) -> return $ Ket (pureType (TUInt (Just n))) expr
+      TUInt (Just n) -> return $ Ket (pureType (TQReg n)) expr
       TInt _  -> case value . getAnnotation $ expr of
         Just 0 -> return $ Ket (pureType TQBit) (EBool (pureType TBool) False)
         Just 1 -> return $ Ket (pureType TQBit) (EBool (pureType TBool) True)
