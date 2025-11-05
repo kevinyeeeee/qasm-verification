@@ -31,11 +31,11 @@ type Location   = S.SourceRef
 
 data Annotation a = 
       Other (String,String)
-    | Assert [([AccessPath a],Expr a)]
+    | Assert [(AccessPath a,Expr a)]
     | Fn (Expr a,Expr a)
-    | Pre [([AccessPath a],Expr a)]
-    | Post [([AccessPath a],Expr a)]
-    | Triple [([AccessPath a], Expr a)] [([AccessPath a], Expr a)]
+    | Pre [(AccessPath a,Expr a)]
+    | Post [(AccessPath a,Expr a)]
+    | Triple [(AccessPath a, Expr a)] [(AccessPath a, Expr a)]
   deriving (Eq, Show)
 
 type Version    = (Int, Maybe Int)
@@ -179,11 +179,13 @@ isIndexable typ = case typ of
 -- | Access paths. Either a variable or an index into a register/bit array
 data AccessPath a = AVar a ID
                   | AIndex a ID (Expr a)
+                  | AList a [AccessPath a]
                   deriving (Eq, Show)
 
 instance Annotated AccessPath where
   getAnnotation (AVar a _) = a
   getAnnotation (AIndex a _ _) = a
+  getAnnotation (AList a _) = a
 
 -- | Promotes an access path to an equivalent expression
 exprFromAP :: AccessPath a -> Expr a
@@ -471,10 +473,12 @@ typeFromSpec x Spec.Bit = TBool
 typeFromSpec x (Spec.Reg e) = TCReg (exprFromSpec x e)
 typeFromSpec x (Spec.UInt e) = TUInt . Just $ exprFromSpec x e
 
-accessPathFromSpec :: a -> [Spec.SExpr] -> [AccessPath a]
-accessPathFromSpec x = map go where
-  go (Spec.Var i Nothing) = AVar x i
-  go (Spec.Var i (Just e')) = AIndex x i (exprFromSpec x e')
+accessPathFromSpec :: a -> [Spec.SExpr] -> AccessPath a
+accessPathFromSpec x es = case es of
+  [e] -> go e
+  _   -> AList x (map go es)
+  where go (Spec.Var i Nothing) = AVar x i
+        go (Spec.Var i (Just e')) = AIndex x i (exprFromSpec x e')
 
 exprFromSpec :: a -> Spec.SExpr -> Expr a
 exprFromSpec = efs

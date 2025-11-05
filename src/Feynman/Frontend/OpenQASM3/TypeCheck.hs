@@ -96,7 +96,7 @@ modifyConstraint f =  do
     Nothing -> 
       case c of 
         ConsTop -> return ()
-        _ -> logMsg ("The constraints: " ++ (show c) ++ " were modified in an invalid way")
+        _ -> return () --logMsg ("The constraints: " ++ (show c) ++ " were modified in an invalid way")
     Just c ->
       put (env { constraints = c })
 
@@ -724,7 +724,7 @@ tcExpr expr0 = case expr0 of
     case typeof expr of
       TBool          -> return $ Ket (pureType TQBit) expr
       TCReg n        -> return $ Ket (pureType (TQReg n)) expr
-      TUInt (Just n) -> return $ Ket (pureType (TUInt (Just n))) expr
+      TUInt (Just n) -> return $ Ket (pureType (TQReg n)) expr
       TInt _  -> case value . getAnnotation $ expr of
         Just 0 -> return $ Ket (pureType TQBit) (EBool (pureType TBool) False)
         Just 1 -> return $ Ket (pureType TQBit) (EBool (pureType TBool) True)
@@ -844,6 +844,24 @@ tcAccessPath ap = case ap of
       _ -> do
         logMsg $ "Type error at (" ++ show loc ++ "): invalid index type"
         return $ AIndex (pureType TUnit) var expr
+  AList loc paths -> do
+    paths <- mapM tcAccessPath paths
+    let p = head paths
+    let listtype = if isQuantum (typeof p) then
+          foldl addType TQBit paths
+        else
+          foldl addType (TCReg 1) paths
+    return $ AList (pureType listtype) paths
+  where
+    addType t a = case (isQuantum t, isQuantum (typeof a)) of
+      (True , True ) -> TQReg (length t + length (typeof a))
+      (False, False) -> TCReg (length t + length (typeof a))
+    length t = case t of
+      TQBit          -> 1
+      TQReg n        -> n
+      TBool          -> 1
+      TCReg n        -> n
+      TUInt (Just n) -> n
 
 -- | Resolves a type
 resolveType :: TypeExpr Location -> TC Type
