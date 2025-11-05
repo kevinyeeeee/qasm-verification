@@ -56,6 +56,9 @@ data SExpr = Var ID (Maybe SExpr)
            | Dagger SExpr
            deriving (Eq, Show)
 
+-- | Function. Special case of assertions
+data Mapping = Mapping SExpr SExpr deriving (Eq,Show)
+
 -- | Assertions. Conjunctions of assertions are represented as lists
 data Assertion = Pointsto [SExpr] SExpr
                | Pure SExpr

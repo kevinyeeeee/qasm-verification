@@ -6,6 +6,7 @@ import qualified Feynman.Frontend.OpenQASM3.Spec.Lexer as L
 import Feynman.Frontend.OpenQASM3.Spec
 }
 
+%name parseFunction function
 %name parseAssertion assertions
 %name parseSExpr sexpr
 %tokentype { Token }
@@ -68,6 +69,8 @@ type : basetype '{' pred '}' { Refined $1 $3 }
 basetype : bit               { Bit }
          | bit '[' expr ']'  { Reg $3 }
          | uint '[' expr ']' { UInt $3 }
+
+function : sexpr mapsto sexpr { Mapping $1 $3 }
 
 assertions : assertion                { [$1] }
            | assertions ',' assertion { $1 ++ [$3] }
