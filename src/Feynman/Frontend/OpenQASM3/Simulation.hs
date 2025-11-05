@@ -171,6 +171,7 @@ offsetListOfPath path = do
               Symbolic (TQReg n) offset -> return [offset + i]
             Nothing -> error "binding not found"
         _      -> error "index by non-int" 
+    AList _ as -> liftM concat $ mapM offsetListOfPath as
 
 -- | Gives the unicode representation of the ith offset of v
 varOfOffset :: ID -> Int -> String
@@ -474,7 +475,7 @@ verifyDef' pre post binds body = do
     checkPost ps globals =
       let ps' = evalState (do { applyPost; discardExcept outPaths }) $ (initEnv True) { globals = globals } in
         if ps ~~= ps' then
-          Trace.trace ("verification success:" ++ show (grind ps) ++ " " ++ show (grind ps')) (return ())
+          Trace.trace ("verification success: " ++ show (grind ps) ++ " " ++ show (grind ps')) (return ())
         else
           error $ "verification failed: " ++ show (grind ps) ++ " " ++ show (grind ps')
 
@@ -521,6 +522,7 @@ evalBra path = dens . simA $ path
       AIndex typ aid (EInt _ i) -> case ty typ of
         TQBit -> bra [ ofVar (varOfOffset aid i) ]
         TBool -> bra [ ofVar (varOfOffset aid i) ]
+      AList typ as -> foldr1 (<>) (map simA as)
     dens = 
       if isQuantum (typeof path) then
         (\x -> x <> renameKet x)

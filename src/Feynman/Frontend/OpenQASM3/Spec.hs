@@ -47,6 +47,7 @@ data SExpr = Var ID (Maybe SExpr)
            | Tensor SExpr SExpr
            | Compose SExpr SExpr
            | Dagger SExpr
+           | Paths [SExpr]
            deriving (Show)
 
 -- | Assertions. Conjunctions of assertions are represented as lists

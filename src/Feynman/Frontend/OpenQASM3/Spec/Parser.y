@@ -70,7 +70,14 @@ basetype : bit               { Bit }
 assertions : assertion                { [$1] }
            | assertions '&' assertion { $1 ++ [$3] }
 
-assertion : sexprs '=' sexprs { Equals $1 $3 }
+assertion : path '=' sexprs          { Equals $1 $3 }
+          | '(' paths ')' '=' sexprs { Equals (Paths $2) $5 }
+
+paths : path              { [$1] }
+      | paths ',' path    { $1 ++ [$3] }
+
+path : id                 { Var $1 Nothing }
+     | id '[' expr ']'    { Var $1 (Just $3) }
 
 sexprs : sexpr            { $1 }
        | '(' sexprs ')'    { $2 }
