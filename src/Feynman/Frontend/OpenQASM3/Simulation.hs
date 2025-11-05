@@ -12,7 +12,7 @@ import Feynman.Core (ID, Angle(..), discretize)
 import Feynman.Frontend.OpenQASM3.Core
 import Feynman.Frontend.OpenQASM3.TypeCheck (ElaboratedType(EType,ty), typeof)
 import Feynman.Algebra.Polynomial.Multilinear (SBool, ofVar, rename, PseudoBoolean, cast, constant, canonicalize)
-import Data.Bits (Bits, testBit, xor, (.&.))
+import Data.Bits (Bits, testBit, xor, (.&.), (.>>.))
 import Data.Complex ( Complex, imagPart, realPart )
 
 import qualified Feynman.Util.Unicode as U
@@ -142,25 +142,35 @@ getCWidth = gets go
     go (Env ps _ _ False qwidth) = outDeg ps - qwidth
     go (Env ps _ _ True  qwidth) = outDeg ps - 2*qwidth
 
+getCOffset :: State Env Int
+getCOffset = gets go
+  where
+    go (Env _ _ _ False qwidth) = qwidth
+    go (Env _ _ _ True  qwidth) = 2 * qwidth
+
+-- | returns physical index of access path in ps
 offsetListOfPath :: AccessPath ElaboratedType -> State Env [Int]
-offsetListOfPath path = case path of
-  AVar _ vid -> do
-    bind <- searchBinding vid
-    case bind of
-      Nothing -> error "bind not found"
-      Just b  -> case b of
-        Symbolic (TQReg n) offset -> return [ i | i <- [offset..offset+n-1] ] 
-        Symbolic TQBit     offset -> return [ offset ]
-  AIndex _ vid e -> do
-    e' <- reduceExpr e
-    case e' of
-      VInt i -> do
-        bind <- searchBinding vid
-        case bind of
-          Just b -> case b of
-            Symbolic (TQReg n) offset -> return [offset + i]
-          Nothing -> error "binding not found"
-      _      -> error "index by non-int" 
+offsetListOfPath path = do
+  cOffset <- getCOffset
+  case path of
+    AVar _ vid -> do
+      bind <- searchBinding vid
+      case bind of
+        Nothing -> error "bind not found"
+        Just b  -> case b of
+          Symbolic (TQReg n) offset -> return [offset..offset+n-1]
+          Symbolic TQBit     offset -> return [ offset ]
+          Symbolic (TCReg n) offset -> return $ map (+cOffset) [offset.. offset+n-1]
+    AIndex _ vid e -> do
+      e' <- reduceExpr e
+      case e' of
+        VInt i -> do
+          bind <- searchBinding vid
+          case bind of
+            Just b -> case b of
+              Symbolic (TQReg n) offset -> return [offset + i]
+            Nothing -> error "binding not found"
+        _      -> error "index by non-int" 
 
 -- | Gives the unicode representation of the ith offset of v
 varOfOffset :: ID -> Int -> String
@@ -234,21 +244,6 @@ allocateQType v qbits = do
         psSize   = outDeg ps
         newOuts  = if density then qbits <> (conjugate qbits') else qbits
         embedded = embed newOuts psSize (\i -> i) (\i -> if i < size then i + w else i + 2*w)
-        newPs    = ps .> embedded
-
-allocateCBits :: ID -> Int -> Maybe [SBool String] -> State Env Int
-allocateCBits v size init = do
-  offset <- getCWidth
-  modify $ allocateC
-  return $ offset 
-  where
-    bits                                 = case init of
-      Nothing   -> ket $ [ofVar (varOfOffset v i) | i <- [0..size-1]]
-      Just list -> ket $ list
-    allocateC env@(Env ps _ _ density w) = env { pathsum = newPs }
-      where
-        psSize   = outDeg ps
-        embedded = embed bits psSize (\i -> i) (\i -> i + psSize)
         newPs    = ps .> embedded
 
 allocateCType :: ID -> Pathsum DMod2 -> State Env Int
@@ -490,15 +485,16 @@ verifyDef pre post binds body = do
   binds' <- traverse (\(a, x) -> (,) a <$> typeExprToType x) binds
   globals <- gets globals
   preState <- setUpPre binds' globals
-  let env = execState (simStmt 1 body) preState
-  if checkPost binds' env then
-    return ()
-  else
-    error "verification failed"
+  let ps = evalState (traceExcept outPaths) $ execState (simStmt 1 body) preState
+  checkPost binds' ps globals
   where
-    checkPost binds (Env ps globals _ _ _) =
+    (outPaths, _) = unzip post
+    checkPost binds ps globals =
       let (Env ps' _ _ _ _) = execState (g post binds) ((initEnv True) {globals = globals}) in
-        ps ~~= ps'
+        if ps ~~= ps' then
+          Trace.trace ("verification success:" ++ show ps ++ " " ++ show ps') (return ())
+        else
+          error $ "verification failed: " ++ show (grind ps) ++ " " ++ show ps'
     setUpPre binds globals = return $ execState (g pre binds) ((initEnv True) {globals = globals})
     g conds binds    = forM binds (\(id, typ) -> do
       initKet <- y conds (id, typ)
@@ -508,7 +504,14 @@ verifyDef pre post binds body = do
     y conds (aid, typ) = case List.find ( \(a, _) -> case a of
                                           AVar _ id -> aid == id
                                           AIndex _ id _ -> aid == id ) conds of
-      Just (_, e) -> simKet e
+      Just (_, e) -> case typ of
+        TQBit   -> simKet e
+        TQReg _ -> simKet e
+        TBool   -> liftM (ket . (\a -> [a])) (exprToBoolPoly e)
+        TCReg n -> do
+          p <- exprToBoolPolyList e
+          return $ ket (setWidth p n)
+        TUInt _ -> liftM ket (exprToBoolPolyList e)
       Nothing     -> case typ of
         TQBit   -> return $ ket [ ofVar aid ]
         TBool   -> return $ ket [ ofVar aid ]
@@ -551,7 +554,7 @@ simKet expr = case expr of
   EBOp _ e1 PlusOp e2 -> do
     ps1 <- simKet e1
     ps2 <- simKet e2
-    return $ plus ps1 ps2
+    return $ ps1 + ps2
   EBOp _ e1 TimesOp e2 -> liftM2 (<>) (simKet e1) (simKet e2)
 
 exprToDyadicPoly :: Expr ElaboratedType -> State Env (PseudoBoolean Var DyadicRational)
@@ -599,6 +602,14 @@ exprToBoolPoly e = case e of
     p1 <- exprToBoolPoly e1
     p2 <- exprToBoolPoly e2
     return $ p1 + p2
+
+exprToBoolPolyList :: Expr ElaboratedType -> State Env [SBool String]
+exprToBoolPolyList e = case e of
+  EVar t vid -> case ty t of
+    TCReg n -> return [ofVar (varOfOffset vid i) | i <- [0..n-1]]
+    TUInt (Just n) -> return [ofVar (varOfOffset vid i) | i <- [0..n-1]]
+  EInt _ n   -> return $ bitVec' n
+  x -> error $ show x
 
 sumOver :: [(ID, Maybe Type)] -> Pathsum DMod2 -> Pathsum DMod2
 sumOver svars = sumover (concatMap go svars) where
@@ -838,6 +849,13 @@ bitVec n size = map f [0..size-1]
   where
     f i = if testBit n i then 1 else 0
 
+bitVec' :: Int -> [SBool String]
+bitVec' = map (fromInteger . toInteger) . List.unfoldr f
+  where
+    f n = if n == 0 then Nothing
+      else
+        Just (n .&. 1, n .>>. 1)
+
 stdlib = ["x", "y", "z", "h", "cx", "cy", "cz", "ch", "id", "s", "sdg", "t", "tdg", "rz", "rx", "ry", "ccx", "crz", "u3", "u2", "u1", "cu1", "cu3", "swap"]
 
 applyPS :: Pathsum DMod2 -> SBool Var -> [Int] -> State Env ()
@@ -951,17 +969,33 @@ tracePaths paths = do
       (w-1, ps') 
 
 traceExcept :: [AccessPath ElaboratedType] -> State Env (Pathsum DMod2)
+-- traceExcept p = error $ show p
 traceExcept paths = do
-  offsets <- liftM concat $ mapM offsetListOfPath paths
+  let (qpaths, cpaths) = List.partition 
+        ( \p -> case typeof p of
+            TQBit   -> True
+            TQReg _ -> True
+            _ -> False
+        ) paths
+  qOffsets <- liftM concat $ mapM offsetListOfPath qpaths
+  cOffsets <- liftM concat $ mapM offsetListOfPath cpaths 
   qwidth <- getQWidth
-  ps <- gets $ pathsum
-  return $ snd $ foldr (go offsets) (qwidth, ps) (reverse [0..qwidth-1])
+  cwidth <- getCWidth
+  coffset <- getCOffset
+  ps <- gets pathsum
+  let ps' = traceC cOffsets ps cwidth coffset
+  let (_, ps'') = traceQ qOffsets ps' qwidth
+  return $ ps''
   where
-    go skips i (w, ps) = if i `elem` skips then
-        (w, ps)
+    traceC :: [Int] -> Pathsum DMod2 -> Int -> Int -> Pathsum DMod2
+    traceC skips ps cwidth coffset = foldr discard ps [ j | j <- [coffset..coffset + cwidth-1]
+                                                         , j `notElem` skips ]
+    traceQ skips ps qwidth = foldr (\i (w, p) -> 
+      if i `elem` skips then 
+        (w, p) 
       else
-        let ps' = traceOut i (i+w) ps in
-          (w-1, ps')
+        (w-1, traceOut i (i+w) p) )
+      (qwidth, ps) [0..qwidth-1]
 
 simStmts :: [Stmt ElaboratedType] -> State Env ()
 simStmts = mapM_ $ simStmt 1

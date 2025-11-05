@@ -55,6 +55,7 @@ tokens :-
   \=\=                                                      { \s -> TEquals }
   \!\=                                                      { \s -> TNEquals }
   \&\&                                                      { \s -> TAnd }
+  \&                                                        { \s -> TSepAnd }
   \|\|                                                      { \s -> TOr }
   [a-z]($digit|$alpha)*                                     { \s -> TID s }
   ($digit+\.$digit*|$digit*\.$digit+)([eE][\-\+]?$digit+)?  { \s -> TReal (read s) }
@@ -93,6 +94,7 @@ data Token =
   | TNEquals
   | TAnd
   | TOr
+  | TSepAnd
   -- Symbols
   | TArrow
   | TLongArrow

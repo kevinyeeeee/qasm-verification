@@ -50,7 +50,8 @@ import Feynman.Frontend.OpenQASM3.Spec
   '.'      { TDot }
   '='      { TEquals }
   neq      { TNEquals }
-  '&'      { TAnd }
+  '&&'     { TAnd }
+  '&'      { TSepAnd }
   or       { TOr }
   '`'      { TBacktick }
   id       { TID   $$ }
@@ -83,7 +84,7 @@ refinement : refinement1               { $1 }
            | refinement or refinement1 { BExp $1 Or $3 }
 
 refinement1 : refinement2                 { $1 }
-            | refinement1 '&' refinement2 { BExp $1 And $3 }
+            | refinement1 '&&' refinement2 { BExp $1 And $3 }
 
 refinement2 : refinement3        { $1 }
             | '~' refinement3    { UExp Neg $2 }
@@ -106,7 +107,7 @@ term : factor          { $1 }
      | term '*' factor { BExp $1 Times $3 }
      | term '/' factor { BExp $1 Div $3 }
      | term '^' factor { BExp $1 Pow $3 }
-     | term '&' factor { BExp $1 And $3 }
+     | term '&&' factor { BExp $1 And $3 }
 
 factor : appl               { $1 } 
        | factor lshift appl { BExp $1 LShift $3 }
