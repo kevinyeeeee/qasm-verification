@@ -131,7 +131,7 @@ atom : int                { ILit $1 }
      | id                 { Var $1 Nothing }
      | id '[' expr ']'    { Var $1 (Just $3) }
      | id ':' type        { VarDec $1 $3 }
-     | '(' expr ')'       { $2 }
+     | '(' sexprs ')'     { $2 }
      | '|' sexprs '>'     { Ket $2 }
      | '<' sexprs '|'     { Dagger (Ket $2) }
      | atom '`'           { Dagger $1 }
