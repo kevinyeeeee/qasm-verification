@@ -6,7 +6,7 @@ include "stdgates.inc";
 @post   a   == |x>
     &&  b   == |y>
     &&  c   == |x*y>
-def cg_tof (qubit a, qubit b, qubit c) {
+def cg_tof_1 (qubit a, qubit b, qubit c) {
     cx a, c;
     cx b, c;
     cx c, b;
