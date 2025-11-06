@@ -1,11 +1,7 @@
 include "stdgates.inc";
 
-@pre    a   == |x>
-    &&  b   == |y>
-    &&  c   == |0>+(exp(1/4) * |1>)
-@post   a   == |x>
-    &&  b   == |y>
-    &&  c   == |x*y>
+@pre    a   == |aval> &  b   == |bval> &  c   == |0>+(exp(1/4) * |1>)
+@post   a   == |aval> &  b   == |bval> &  c   == |aval*bval>
 def cg_tof_1 (qubit a, qubit b, qubit c) {
     cx a, c;
     cx b, c;

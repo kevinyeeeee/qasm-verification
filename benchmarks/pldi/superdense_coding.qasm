@@ -1,7 +1,7 @@
 include "stdgates.inc";
 
-@pre    bob          == |0>
-@post   bob          == |alice>
+@pre    bob          == |0>,|0>
+@post   bob          == |alice[0], alice[1]>
 def superdense_coding (bit[2] alice, qubit[2] bob) {
     //prepare bell state
     h bob[0];
