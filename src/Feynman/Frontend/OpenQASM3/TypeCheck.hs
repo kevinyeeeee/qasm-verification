@@ -748,10 +748,12 @@ tcExpr expr0 = case expr0 of
     expr1 <- tcExpr expr1
     expr2 <- tcExpr expr2
     let ty = case (typeof expr1, typeof expr2) of
-          (TQReg n, TQReg m) -> TQReg (n+m)
-          (TQBit  , TQReg m) -> TQReg (m+1)
-          (TQReg n, TQBit  ) -> TQReg (n+1)
-          (TQBit  , TQBit  ) -> TQReg 2
+          (TQReg n , TQReg m) -> TQReg (n+m)
+          (TQBit   , TQReg m) -> TQReg (m+1)
+          (TQReg n , TQBit  ) -> TQReg (n+1)
+          (TQBit   , TQBit  ) -> TQReg 2
+          (TFloat _, TQBit  ) -> TQBit
+          (TFloat _, TQReg m) -> TQReg m
     return $ Tensor (pureType ty) expr1 expr2
 
     -- let (ids,types) = unzip params

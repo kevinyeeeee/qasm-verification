@@ -81,14 +81,14 @@ assertion : expr "~>" sexpr          { Pointsto [$1] $3 }
           | disc '(' exprs ')'       { Discard $3 }
           | pred                     { Pure $1 }
 
-sexpr : sexpr1        { $1 }
-      | sexpr sexpr1  { Tensor $1 $2 }
+sexpr : sexpr1            { $1 }
+      | sexpr '+' sexpr1  { BExp $1 Plus $3 }
 
 sexpr1 : sexpr2             { $1 }
-       | sexpr1 '+' sexpr2  { BExp $1 Plus $3 }
+       | sexpr1 '.' sexpr2  { BExp $1 Times $3 }
 
 sexpr2 : sexpr3            { $1 }
-       | sexpr2 '.' sexpr3 { BExp $1 Times $3 }
+       | sexpr2 sexpr3     { Tensor $1 $2 }
 
 sexpr3 : expr                        { $1 }
        | fun decls arrow sexpr       { Fun $2 $4 }
