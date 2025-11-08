@@ -1267,8 +1267,8 @@ canonicalizeKet sop = go sop 0 0 where
              | j >= pathVars sop = sop
              | otherwise         = case filter (cond j) . solveForX $ (outVals sop)!!i of
                  []             -> go sop (i+1) j
-                 ((PVar j),p):_ ->
-                   go (swapVar i j $ applyVar (PVar j) (p + ofVar (PVar j)) sop) (i+1) (j+1)
+                 ((PVar k),p):_ ->
+                   go (swapVar j k $ applyVar (PVar k) (p + ofVar (PVar k)) sop) (i+1) (j+1)
 
   cond j (v,p) = isP v && unP v >= j
 
