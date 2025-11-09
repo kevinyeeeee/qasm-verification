@@ -33,9 +33,7 @@ data Annotation a =
       Other (String,String)
     | Assert [(AccessPath a,Expr a)]
     | Fn (Expr a,Expr a)
-    | Pre [(AccessPath a,Expr a)]
-    | Post [(AccessPath a,Expr a)]
-    | Triple [(AccessPath a, Expr a)] [(AccessPath a, Expr a)]
+    | Triple [(AccessPath a, Expr a)] [(AccessPath a, Expr a)] [Expr a]
   deriving (Eq, Show)
 
 type Version    = (Int, Maybe Int)
@@ -724,19 +722,21 @@ translateAnnotations nodes = case nodes of
       let preAssertions  = SpecParser.parseAssertion . SpecLexer.lexer $ str
           postAssertions = SpecParser.parseAssertion . SpecLexer.lexer $ str' in do
         rest <- translateAnnotations ns
-        return $ Triple (translateAssertions c preAssertions) (translateAssertions c postAssertions) : rest
+        let (preAssertions', preRefinements)   = translateAssertions c preAssertions
+            (postAssertions', postRefinements) = translateAssertions c postAssertions in
+          return $ Triple preAssertions' postAssertions' (preRefinements ++ postRefinements) : rest
   node:ns -> do
     annot <- translateAnnotation node
     rest <- translateAnnotations ns
     return $ annot : rest
   [] -> return []
   where 
-    translateAssertions c = concatMap (go c)
-    go c (Spec.Pointsto lvl e) =
+    translateAssertions c = foldl (go c) ([], [])
+    go c (as, rs) (Spec.Pointsto lvl e) =
       let (e', ref) = Spec.collectRefinements e in
-        [(accessPathFromSpec c lvl,exprFromSpec c (maybe e' (Spec.Tensor e') ref))]
-    go c (Spec.Discard e)       = []
-    so c (Spec.Pure e)          = [([], exprFromSpec c (Spec.toPredicate e))]
+        ((accessPathFromSpec c lvl, exprFromSpec c e') : as, maybe rs (\x -> exprFromSpec c x : rs) ref)
+    go c (as, rs) (Spec.Discard e)       = (as, rs)
+    go c (as, rs) (Spec.Pure e)          = (as , exprFromSpec c e : rs)
 
 -- | Translation of Annotations
 translateAnnotation :: S.ParseNode -> Either ErrMsg (Annotation S.SourceRef)

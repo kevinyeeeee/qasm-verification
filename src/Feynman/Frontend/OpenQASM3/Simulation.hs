@@ -1,6 +1,6 @@
 module Feynman.Frontend.OpenQASM3.Simulation where
 
-import Control.Monad.State.Strict
+import Control.Monad.State.Strict hiding (lift)
 import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe (fromJust)
@@ -11,7 +11,7 @@ import Feynman.Algebra.Pathsum.Balanced
 import Feynman.Core (ID, Angle(..), discretize)
 import Feynman.Frontend.OpenQASM3.Core
 import Feynman.Frontend.OpenQASM3.TypeCheck (ElaboratedType(EType,ty), typeof)
-import Feynman.Algebra.Polynomial.Multilinear (SBool, ofVar, rename, PseudoBoolean, cast, constant, canonicalize)
+import Feynman.Algebra.Polynomial.Multilinear (SBool, ofVar, rename, PseudoBoolean, cast, constant, canonicalize, lift)
 import Data.Bits (Bits, testBit, xor, (.&.), (.>>.))
 import Data.Complex ( Complex, imagPart, realPart )
 
@@ -69,7 +69,7 @@ castValue (EType ty _ _) val = case (ty, val) of
   (TInt   _, VInt i     ) -> VInt i
   (TBool   , VPoly p    ) -> VPoly p
   (TRange _, VList l    ) -> VList l
-  _ -> error $ show ty ++ " " ++ show val
+  _ -> val
 
 offsetOfVal :: Value -> Int
 offsetOfVal v = case v of
@@ -93,6 +93,12 @@ getPolyOfValue v = case v of
   VCBit j     -> getOutPoly j
   VInt  1     -> return 1
   VInt  0     -> return 0
+
+getPolyListOfValue :: Value -> State Env [SBool Var]
+getPolyListOfValue v = case v of
+  VInt n      -> return $ makeSNat (toInteger n)
+  VCReg i j   -> mapM getOutPoly [i..i+j-1]
+  VPolyList l -> return l
 
 typeExprToType :: TypeExpr ElaboratedType -> State Env Type
 typeExprToType typ = case typ of
@@ -410,6 +416,10 @@ reduceExpr expr = case expr of
         p1 <- getPolyOfValue v1
         p2 <- getPolyOfValue v2
         return $ VPoly (sEq [p1] [p2])
+      (EqOp    , VCReg _ _   , _           ) -> do
+        p1 <- getPolyListOfValue v1
+        p2 <- getPolyListOfValue v2
+        return $ VPoly (sEq p1 p2)
       (TimesOp, v1           , v2          ) -> return $ VFloat (floatOfValue v1 * floatOfValue v2)
       (DivOp  , v1           , v2          ) -> return $ VFloat (floatOfValue v1 / floatOfValue v2)
       _ -> error $ show v1 ++ " " ++ show bop ++ " " ++ show v2 ++ "  type: " ++ show t
@@ -441,41 +451,41 @@ simStmt p stmt = case stmt of
 simAnnotated :: SBool Var -> [Annotation ElaboratedType] -> Stmt ElaboratedType -> State Env (Maybe Value)
 simAnnotated p annots stmt = case stmt of
   SDeclare _ decl@(DDef _ params _ body) -> do
-    verifyDef pre post params body
+    verifyDef pre post refs params body
     simDeclare decl
     return Nothing
   SDeclare _ decl@(DGate _ [] qargs body) -> do
-    verifyDef pre post (zip qargs (repeat TQBit)) body
+    verifyDef pre post refs (zip qargs (repeat TQBit)) body
     simDeclare decl
     return Nothing
   SDeclare _ decl@(DGate _ cparams _ _  ) ->
     error "cannot verify gate with angles parameters"
   _               -> simStmt p stmt
   where
-    (pre, post) = case List.find (\a -> case a of
-      Triple _ _ -> True
-      _          -> False ) annots of
-        Just (Triple pre post) -> (pre, post)
-        _                      -> ([] , []  )
+    (pre, post, refs) = case List.find (\a -> case a of
+      Triple _ _ _ -> True
+      _            -> False ) annots of
+        Just (Triple pre post refs) -> (pre, post, refs)
+        _                           -> ([] , []  , []  )
 
 verifyAssert :: [(AccessPath a, Expr a)] -> State Env ()
 verifyAssert conds = error "TODO"
 
-verifyDef :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(ID, TypeExpr ElaboratedType)] -> Stmt ElaboratedType -> State Env ()
-verifyDef pre post binds body = do
+verifyDef :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [Expr ElaboratedType] -> [(ID, TypeExpr ElaboratedType)] -> Stmt ElaboratedType -> State Env ()
+verifyDef pre post refs binds body = do
   binds' <- traverse (\(a, x) -> (,) a <$> typeExprToType x) binds
-  verifyDef' pre post binds' body
+  verifyDef' pre post refs binds' body
 
-verifyDef' :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(ID, Type)] -> Stmt ElaboratedType -> State Env ()
-verifyDef' pre post binds body = do
+verifyDef' :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [Expr ElaboratedType] -> [(ID, Type)] -> Stmt ElaboratedType -> State Env ()
+verifyDef' pre post refs binds body = do
   globals <- gets globals
-  let ps = evalState (do { applyPre; simStmt 1 body; traceExcept outPaths }) $ (initEnv True) { globals = globals }
+  let ps = evalState (do { applyPre; mapM applyRefinement refs; simStmt 1 body; traceExcept outPaths }) $ (initEnv True) { globals = globals }
   checkPost ps globals
   where
     checkPost ps globals =
-      let ps' = evalState (do { applyPost; discardExcept outPaths }) $ (initEnv True) { globals = globals } in
+      let ps' = evalState (do { applyPost; mapM applyRefinement refs; discardExcept outPaths }) $ (initEnv True) { globals = globals } in
         if grind ps ~~= grind ps' then
-          Trace.trace ("verification success: " ++ show (grind ps) ++ " " ++ show (grind ps')) (return ())
+          Trace.trace ("verification success: " ++ show (grind ps')) (return ())
         else
           error $ "verification failed: " ++ show (grind ps) ++ " " ++ show (grind ps')
 
@@ -484,13 +494,18 @@ verifyDef' pre post binds body = do
     applyCond (path, expr) = do
       let bra = evalBra path
       initKet <- z' path expr
-      let t = bra <> initKet
+      let t = grind bra <> grind initKet
       offsets <- offsetListOfPath path
       qwidth <- getQWidth
       let offsets' = if isQuantum (typeof path) then offsets ++ (map (+qwidth) offsets) else offsets
       env <- get
       --Trace.trace (show (grind t) ++ " " ++ show path ++ " " ++ show expr) (return ())
       modify $ \env -> env { pathsum = applyOn t offsets' (pathsum env) }
+
+    applyRefinement ref = do
+      pp <- exprToSBV ref
+      let pred = Pathsum 0 0 0 0 (lift $ ofVar (FVar "%%%") * (1+pp) ) []
+      modify $ \env -> env { pathsum = sumover ["%%%"] (pred <> pathsum env) }
 
     z' path expr = case typeof path of
       TQBit   -> liftM (\x -> x <> conjugate (renameKet x)) $ simKet expr
@@ -554,31 +569,42 @@ simKet expr = case expr of
   EBOp _ e1 TimesOp e2 -> liftM2 (<>) (simKet e1) (simKet e2)
 
 exprToDyadicPoly :: Expr ElaboratedType -> State Env (PseudoBoolean Var DyadicRational)
-exprToDyadicPoly e = case e of
-  EBOp _ divi DivOp (EInt _ n) -> 
-    if isPowerOfTwo n then
-      do
-        pp <- exprToDyadicPoly divi
-        return $ pp * constant (toDyadic $ 1.0 / fromIntegral n)
-    else error "phase poly not dyadic"
-  EBOp _ e1 TimesOp e2       -> do
-    pp1 <- exprToDyadicPoly e1
-    pp2 <- exprToDyadicPoly e2
-    return $ pp1 * pp2
-  EBOp _ e1 PlusOp e2        -> do
-    pp1 <- exprToDyadicPoly e1
-    pp2 <- exprToDyadicPoly e2
-    return $ pp1 + pp2
-  EBOp _ e1 MinusOp e2       -> do
-    pp1 <- exprToDyadicPoly e1
-    pp2 <- exprToDyadicPoly e2
-    return $ pp1 - pp2
-  EInt _ n                   -> return $ fromInteger $ toInteger n
-  EVar vtyp vid              -> case ty vtyp of
-    TBool          -> return $ ofVar (FVar vid)
-    TUInt (Just n) -> return $ bitBlast n vid
+exprToDyadicPoly e = case typeof e of
+  TBool -> do
+    pp <- exprToSBV e
+    return $ lift pp
+  _ -> case e of
+    EBOp _ divi DivOp (EInt _ n) -> 
+      if isPowerOfTwo n then
+        do
+          pp <- exprToDyadicPoly divi
+          return $ pp * constant (toDyadic $ 1.0 / fromIntegral n)
+      else error "phase poly not dyadic"
+    EBOp _ e1 TimesOp e2       -> do
+      pp1 <- exprToDyadicPoly e1
+      pp2 <- exprToDyadicPoly e2
+      return $ pp1 * pp2
+    EBOp _ e1 PlusOp e2        -> do
+      pp1 <- exprToDyadicPoly e1
+      pp2 <- exprToDyadicPoly e2
+      return $ pp1 + pp2
+    EBOp _ e1 MinusOp e2       -> do
+      pp1 <- exprToDyadicPoly e1
+      pp2 <- exprToDyadicPoly e2
+      return $ pp1 - pp2
+    EInt _ n                   -> return $ fromInteger $ toInteger n
+    EVar vtyp vid              -> case ty vtyp of
+      TBool          -> return $ ofVar (FVar vid)
+      TUInt (Just n) -> return $ bitBlast n vid
+    _ -> error $ "dyadic poly error: " ++ show e
   where
     bitBlast m id = foldl1 (+) [ (2 ^ i) * ofVar (FVar $ varOfOffset id i) | i <- [0..m-1] ]
+
+exprToSBVList :: Expr ElaboratedType -> State Env [SBool Var]
+exprToSBVList = liftM (map (rename FVar)) . exprToBoolPolyList
+
+exprToSBV :: Expr ElaboratedType -> State Env (SBool Var)
+exprToSBV = liftM (rename FVar) . exprToBoolPoly
 
 exprToPhasePoly :: Expr ElaboratedType -> State Env (PseudoBoolean Var DMod2)
 exprToPhasePoly = liftM (cast fromDyadic) . exprToDyadicPoly
@@ -598,6 +624,17 @@ exprToBoolPoly e = case e of
     p1 <- exprToBoolPoly e1
     p2 <- exprToBoolPoly e2
     return $ p1 + p2
+  EBOp _ e1 AndOp e2 -> do
+    p1 <- exprToBoolPoly e1
+    p2 <- exprToBoolPoly e2
+    return $ p1 * p2
+  EUOp _ NegOp e -> do
+    p <- exprToBoolPoly e
+    return $ 1 + p
+  EBOp _ e1 LEqOp e2 -> do
+    pl1 <- exprToBoolPolyList e1
+    pl2 <- exprToBoolPolyList e2
+    return $ sLEq pl1 pl2
 
 exprToBoolPolyList :: Expr ElaboratedType -> State Env [SBool String]
 exprToBoolPolyList e = case e of
@@ -607,6 +644,9 @@ exprToBoolPolyList e = case e of
   EInt t m   -> case ty t of
     TUInt (Just n) -> return $ setWidth (bitVec' m) n
     _              -> return $ bitVec' m
+  EUOp _ PopcountOp e -> do
+    pl <- exprToBoolPolyList e
+    return $ sPopcount pl
   x -> error $ show x
 
 sumOver :: [(ID, Maybe Type)] -> Pathsum DMod2 -> Pathsum DMod2

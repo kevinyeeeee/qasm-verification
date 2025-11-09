@@ -367,6 +367,7 @@ tcUOp uop typ = case uop of
   FloorOp    | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
   ExpOp      | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
   ExpOp      | castable typ (TCmplx Nothing) -> Just (TCmplx Nothing)
+  ExpOp      | castable typ (TBool)          -> Just (TFloat Nothing)
   LnOp       | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
   SqrtOp     | castable typ (TFloat Nothing) -> Just (TFloat Nothing)
   SqrtOp     | castable typ (TCmplx Nothing) -> Just (TCmplx Nothing)
@@ -580,7 +581,7 @@ tcAnnotation _ (Fn (e1,e2)) = do
   e1 <- tcExpr e1
   e2 <- tcExpr e2
   return (Fn (e1, e2))
-tcAnnotation stmt (Triple pre post) = case stmt of
+tcAnnotation stmt (Triple pre post refs) = case stmt of
   SDeclare _ decl -> 
     let params = case decl of
           DDef  {dparams = p} -> p
@@ -591,14 +592,9 @@ tcAnnotation stmt (Triple pre post) = case stmt of
     scope <- openProcScope (zip ids types)
     pre <- mapM tcEq pre
     post <- mapM tcEq post
+    refs <- mapM tcExpr refs
     closeProcScope scope
-    return (Triple pre post)
-tcAnnotation stmt (Pre eqs) = do
-  eqs <- mapM tcEq eqs
-  return (Pre eqs)
-tcAnnotation stmt (Post eqs) =do
-  eqs <- mapM tcEq eqs
-  return (Post eqs)
+    return (Triple pre post refs)
 
 -- | Expression type checking
 tcExpr :: Expr Location -> TC (Expr ElaboratedType)
@@ -754,6 +750,9 @@ tcExpr expr0 = case expr0 of
           (TQBit   , TQBit  ) -> TQReg 2
           (TFloat _, TQBit  ) -> TQBit
           (TFloat _, TQReg m) -> TQReg m
+          (TQBit   , TFloat _) -> TQBit
+          (TQReg m , TFloat _) -> TQReg m
+          (t, s) -> error $ show t ++ " -- " ++ show expr2
     return $ Tensor (pureType ty) expr1 expr2
 
     -- let (ids,types) = unzip params
@@ -846,6 +845,7 @@ tcAccessPath ap = case ap of
       _ -> do
         logMsg $ "Type error at (" ++ show loc ++ "): invalid index type"
         return $ AIndex (pureType TUnit) var expr
+  AList loc [] -> return $ AList (pureType (TFloat Nothing)) []
   AList loc paths -> do
     paths <- mapM tcAccessPath paths
     let p = head paths
