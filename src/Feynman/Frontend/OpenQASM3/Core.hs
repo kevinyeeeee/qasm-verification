@@ -251,6 +251,7 @@ instance Annotated Expr where
     Ket a _ -> a
     Tensor a _ _ -> a
     Sum a _ _ -> a
+    EVarDec a _ _ -> a
 
 -- | Declarations
 data Decl a =

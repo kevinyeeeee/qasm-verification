@@ -423,7 +423,8 @@ tcDecl decl = case decl of
       (True,TInt _,Just expr)  -> evalUInt expr >>= return . Just
       (True,TUInt _,Just expr) -> evalUInt expr >>= return . Just
       _                        -> return Nothing
-    assign var (EType typ isConstant intVal)
+    let etype = EType typ isConstant intVal
+    assign var etype
     return $ DVar var (asTypeExpr' typ) val isConstant
 
   DDef var params ret body -> do
@@ -708,7 +709,7 @@ tcExpr expr0 = case expr0 of
     typ <- resolveType typexpr
     let etyp = pureType typ
     assign id etyp
-    return $ EVar etyp id
+    return $ EVarDec etyp id (asTypeExpr' typ)
   
   Ket loc expr -> do
     modifyConstraint 

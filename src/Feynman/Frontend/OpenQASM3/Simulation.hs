@@ -3,14 +3,14 @@ module Feynman.Frontend.OpenQASM3.Simulation where
 import Control.Monad.State.Strict hiding (lift)
 import Data.Map (Map)
 import qualified Data.Map as Map
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.List as List
 import Feynman.Algebra.Base (DMod2, DyadicRational, fromDyadic, toDyadic)
 import Feynman.Algebra.SArith
 import Feynman.Algebra.Pathsum.Balanced
 import Feynman.Core (ID, Angle(..), discretize)
 import Feynman.Frontend.OpenQASM3.Core
-import Feynman.Frontend.OpenQASM3.TypeCheck (ElaboratedType(EType,ty), typeof)
+import Feynman.Frontend.OpenQASM3.TypeCheck (ElaboratedType(EType,ty, isConstant), typeof)
 import Feynman.Algebra.Polynomial.Multilinear (SBool, ofVar, rename, PseudoBoolean, cast, constant, canonicalize, lift)
 import Data.Bits (Bits, testBit, xor, (.&.), (.>>.))
 import Data.Complex ( Complex, imagPart, realPart )
@@ -83,22 +83,28 @@ floatOfValue v = case v of
   VPi         -> pi
   VBool False -> 0.0
   VBool True  -> 1.0
-  _           -> error "cast to float forbidden or not handled"
+  _           -> error $ "cast to float forbidden or not handled : " ++ show v
 
-getPolyOfValue :: Value -> State Env (SBool Var)
+getPolyOfValue :: Value -> State Env (Maybe (SBool Var))
 getPolyOfValue v = case v of
-  VBool True  -> return 1
-  VBool False -> return 0
-  VPoly p     -> return p
-  VCBit j     -> getOutPoly j
-  VInt  1     -> return 1
-  VInt  0     -> return 0
+  VBool True  -> return $ Just 1
+  VBool False -> return $ Just 0
+  VPoly p     -> return $ Just p
+  VCBit j     -> liftM Just $ getOutPoly j
+  VInt  1     -> return $ Just 1
+  VInt  0     -> return $ Just 0
+  _ -> return Nothing
 
 getPolyListOfValue :: Value -> State Env [SBool Var]
 getPolyListOfValue v = case v of
   VInt n      -> return $ makeSNat (toInteger n)
   VCReg i j   -> mapM getOutPoly [i..i+j-1]
   VPolyList l -> return l
+  _ -> error $ show v
+
+intOfValue :: Value -> Int
+intOfValue v = case v of
+  VInt i -> i
 
 typeExprToType :: TypeExpr ElaboratedType -> State Env Type
 typeExprToType typ = case typ of
@@ -225,7 +231,7 @@ allocateQType v qbits = do
   return $ offset 
   where
     qbits' = renameKet qbits
-    size   = length (outVals qbits)
+    size   = outDeg qbits
     allocateQ env@(Env ps _ _ density w) = env { pathsum = newPs, qwidth = w + size }
       where
         psSize   = outDeg ps
@@ -299,8 +305,9 @@ reduceExpr expr = case expr of
           gets $ \env -> (!! j) . outVals $ pathsum env )
   EVar _ vid   -> do
     bind <- searchBinding vid
+    env <- get
     case bind of
-      Nothing                    -> error "binding not found"
+      Nothing                    -> error $ "binding not found: " ++ show env
       Just (Scalar _ e)          -> return e
       Just (Symbolic typ offset) -> case typ of
         TCReg n -> return $ VCReg offset n
@@ -309,6 +316,18 @@ reduceExpr expr = case expr of
         TQReg n -> return $ VQReg offset n
         TUInt (Just n) -> return $ VCReg offset n
         _       -> error "invalid symbolic type"
+  EVarDec t vid typeExpr -> do
+    ty <- typeExprToType typeExpr
+    case ty of
+      TBool   -> let v = VPoly (ofVar $ FVar vid) in do
+        bindVar vid $ Scalar ty v
+        return $ v
+      TCReg n -> let v = VPolyList [ ofVar $ FVar (varOfOffset vid i) | i <- [0..n-1] ] in do
+        bindVar vid $ Scalar ty v
+        return $ v
+      TUInt (Just n) -> let v = VPolyList [ ofVar $ FVar (varOfOffset vid i) | i <- [0..n-1] ] in do
+        bindVar vid $ Scalar ty v
+        return $ v
   EIndex _ x i -> do
     x' <- reduceExpr x
     i' <- reduceExpr i
@@ -415,11 +434,12 @@ reduceExpr expr = case expr of
       (EqOp    , VCBit _     , _           ) -> do
         p1 <- getPolyOfValue v1
         p2 <- getPolyOfValue v2
-        return $ VPoly (sEq [p1] [p2])
+        return $ VPoly (sEq [fromJust p1] [fromJust p2])
       (EqOp    , VCReg _ _   , _           ) -> do
         p1 <- getPolyListOfValue v1
         p2 <- getPolyListOfValue v2
         return $ VPoly (sEq p1 p2)
+      (TimesOp, VPoly p1     , VPoly p2    ) -> return $ VPoly (p1 * p2)
       (TimesOp, v1           , v2          ) -> return $ VFloat (floatOfValue v1 * floatOfValue v2)
       (DivOp  , v1           , v2          ) -> return $ VFloat (floatOfValue v1 / floatOfValue v2)
       _ -> error $ show v1 ++ " " ++ show bop ++ " " ++ show v2 ++ "  type: " ++ show t
@@ -477,20 +497,25 @@ verifyDef pre post refs binds body = do
   verifyDef' pre post refs binds' body
 
 verifyDef' :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [Expr ElaboratedType] -> [(ID, Type)] -> Stmt ElaboratedType -> State Env ()
-verifyDef' pre post refs binds body = do
-  globals <- gets globals
-  let ps = evalState (do { applyPre; mapM applyRefinement refs; simStmt 1 body; traceExcept outPaths }) $ (initEnv True) { globals = globals }
-  checkPost ps globals
+verifyDef' pre post refs bindings body = do
+  env' <- get
+  modify $ \env -> (initEnv True) { globals = globals env }
+  do { applyPre; mapM applyRefinement refs; simStmt 1 body }
+  prePS <- traceExcept outPaths
+  modify $ \env -> env { pathsum = mempty, qwidth = 0, binds = Map.empty : binds env }
+  (do { applyPost; mapM applyRefinement refs })
+  postPS <- discardExcept outPaths
+  checkPost prePS postPS
+  modify $ \env -> env'
   where
-    checkPost ps globals =
-      let ps' = evalState (do { applyPost; mapM applyRefinement refs; discardExcept outPaths }) $ (initEnv True) { globals = globals } in
-        if grind ps ~~= grind ps' then
-          Trace.trace ("verification success: " ++ show (grind ps')) (return ())
-        else
-          error $ "verification failed: " ++ show (grind ps) ++ " " ++ show (grind ps')
+    checkPost ps ps' =
+      if grind ps ~~= grind ps' then
+        Trace.trace ("verification success: " ++ show (grind ps')) (return ())
+      else
+        error $ "verification failed: " ++ show (grind ps) ++ " " ++ show (grind ps')
 
     (outPaths, _) = unzip post
-    declareAll = forM binds (\(id, typ) -> declareSymbolic id typ Nothing)
+    declareAll = forM bindings (\(id, typ) -> declareSymbolic id typ Nothing)
     applyCond (path, expr) = do
       let bra = evalBra path
       initKet <- z' path expr
@@ -510,9 +535,9 @@ verifyDef' pre post refs binds body = do
     z' path expr = case typeof path of
       TQBit   -> liftM (\x -> x <> conjugate (renameKet x)) $ simKet expr
       TQReg _ -> liftM (\x -> x <> conjugate (renameKet x)) $ simKet expr
-      TBool   -> liftM (ket . (\a -> [a])) (exprToBoolPoly expr)
-      TCReg n -> liftM (\y -> ket (setWidth y n)) (exprToBoolPolyList expr)
-      TUInt _ -> liftM ket (exprToBoolPolyList expr)
+      TBool   -> liftM (\a -> Pathsum 0 0 1 0 0 [a]) (exprToSBV expr)
+      TCReg n -> liftM (\y -> Pathsum 0 0 n 0 0 (setWidth y n)) (exprToSBVList expr)
+      TUInt (Just n) -> liftM (\y -> Pathsum 0 0 n 0 0 (setWidth y n)) (exprToSBVList expr)
       TInt  _ -> liftM ket (exprToBoolPolyList expr)
       e -> error $ show expr
 
@@ -561,7 +586,14 @@ simKet expr = case expr of
       TBool          -> return $ ket [ ofVar vid ]
       TCReg n        -> return $ ket [ ofVar (varOfOffset vid i) | i <- [0..n-1] ]
       TUInt (Just m) -> return $ ket [ ofVar (varOfOffset vid i) | i <- [0..m-1] ]
-  Ket _ e                 -> liftM (ket . (\a -> [a])) (exprToBoolPoly e)
+  Ket _ e                 -> do
+    v <- reduceExpr e
+    maybeP <- getPolyOfValue v 
+    case maybeP of
+      Just p  -> return $ Pathsum 0 0 1 0 0 [p]
+      Nothing -> do
+        pList <- getPolyListOfValue v
+        return $ Pathsum 0 0 (length pList) 0 0 pList
   EBOp _ e1 PlusOp e2 -> do
     ps1 <- simKet e1
     ps2 <- simKet e2
@@ -574,10 +606,12 @@ exprToDyadicPoly e = case typeof e of
     pp <- exprToSBV e
     return $ lift pp
   _ -> case e of
-    EBOp _ divi DivOp (EInt _ n) -> 
+    EBOp _ e1 DivOp e2 -> do
+      v <- reduceExpr e2
+      let n = intOfValue v
       if isPowerOfTwo n then
         do
-          pp <- exprToDyadicPoly divi
+          pp <- exprToDyadicPoly e1
           return $ pp * constant (toDyadic $ 1.0 / fromIntegral n)
       else error "phase poly not dyadic"
     EBOp _ e1 TimesOp e2       -> do
@@ -600,11 +634,17 @@ exprToDyadicPoly e = case typeof e of
   where
     bitBlast m id = foldl1 (+) [ (2 ^ i) * ofVar (FVar $ varOfOffset id i) | i <- [0..m-1] ]
 
-exprToSBVList :: Expr ElaboratedType -> State Env [SBool Var]
-exprToSBVList = liftM (map (rename FVar)) . exprToBoolPolyList
+exprToSBVList' :: Expr ElaboratedType -> State Env [SBool Var]
+exprToSBVList' = liftM (map (rename FVar)) . exprToBoolPolyList
+
+exprToSBV' :: Expr ElaboratedType -> State Env (SBool Var)
+exprToSBV' = liftM (rename FVar) . exprToBoolPoly
 
 exprToSBV :: Expr ElaboratedType -> State Env (SBool Var)
-exprToSBV = liftM (rename FVar) . exprToBoolPoly
+exprToSBV e = reduceExpr e >>= getPolyOfValue >>= return . fromJust
+
+exprToSBVList :: Expr ElaboratedType -> State Env [SBool Var]
+exprToSBVList e = reduceExpr e >>= getPolyListOfValue
 
 exprToPhasePoly :: Expr ElaboratedType -> State Env (PseudoBoolean Var DMod2)
 exprToPhasePoly = liftM (cast fromDyadic) . exprToDyadicPoly
@@ -647,6 +687,10 @@ exprToBoolPolyList e = case e of
   EUOp _ PopcountOp e -> do
     pl <- exprToBoolPolyList e
     return $ sPopcount pl
+  EBOp _ e1 PlusOp e2 -> do
+    p1 <- exprToBoolPolyList e1
+    p2 <- exprToBoolPolyList e2
+    return $ sPlus p1 p2
   x -> error $ show x
 
 sumOver :: [(ID, Maybe Type)] -> Pathsum DMod2 -> Pathsum DMod2
@@ -822,6 +866,11 @@ declareScalar id typ maybeExpr = do
         TFloat _ -> VFloat 0
         TCmplx _ -> VCmplx 0
 
+declareGlobalScalar :: ID -> Type -> Expr ElaboratedType -> State Env ()
+declareGlobalScalar vid typ expr = do
+  let EType _ _ v = getAnnotation expr
+  bindGlobal vid (Scalar typ (VInt (fromJust v)))
+
 declareBlock :: ID -> [(ID, Type)] -> Maybe Type -> Stmt ElaboratedType -> State Env ()
 declareBlock id params returns body = let (_, sig) = unzip params in
   bindGlobal id (Block (TProc sig returns) params returns body)
@@ -832,7 +881,11 @@ declareGate id cparams qargs body =
 
 simDeclare :: Decl ElaboratedType -> State Env ()
 simDeclare decl = case decl of
-  DVar vid typ maybeExpr const -> case typ of
+  DVar vid typ maybeExpr const -> if const then do
+      let e = fromJust maybeExpr
+      typ <- typeExprToType typ
+      declareGlobalScalar vid typ e
+    else case typ of
     TBool   -> case maybeExpr of
       Nothing -> declareSymbolic vid TBool Nothing
       Just e  -> do 
@@ -914,11 +967,12 @@ applyModifier ps mod = case mod of
     e <- reduceExpr expr
     case e of
       VInt n -> return $ iterate controlled ps !! n
+  MInv _ -> return $ dagger ps
 
 simGate :: SBool Var -> ID -> [Modifier ElaboratedType] -> [Expr ElaboratedType] -> [AccessPath ElaboratedType] -> State Env ()
 simGate p gid mods cpars qargs
   | gid `elem` stdlib     = simStdGate p gid mods cpars qargs
-  | otherwise             = error "TODO"
+  | otherwise             = simStdGate p gid mods cpars qargs
 
 simStdGate :: SBool Var -> ID -> [Modifier ElaboratedType] -> [Expr ElaboratedType] -> [AccessPath ElaboratedType] -> State Env ()
 simStdGate p gid mods cparams qargs = do
@@ -930,7 +984,6 @@ simStdGate p gid mods cparams qargs = do
 
 simExpr :: SBool Var -> Expr ElaboratedType -> State Env (Maybe Value)
 simExpr p (EStmt _ stmt) = simStmt p stmt
-    
 simExpr p (ECall _ fid args) = do
   env <- get
   bind <- searchBinding fid
@@ -972,7 +1025,24 @@ getGatePS id params = do
     ("crz", [o]) -> return $ rzNgate o 2
     ("gphase", [o]) -> return $ Pathsum 0 0 0 0 (constant o) []
     ("swap", []) -> return $ swapgate
-    _           -> error "TODO"
+    (gid, cs) -> do
+      mBind <- searchBinding gid
+      case mBind of
+        Just (Gate _ params args body) -> do
+          ps <- gets pathsum
+          density <- gets density 
+          qwidth <- gets qwidth
+          pushEmptyEnv
+          modify $ \env -> env { pathsum = mempty , density = False , qwidth = 0 }
+          bindParams (zip params (repeat (TAngle Nothing))) vs
+          forM args $ \id -> declareWithPS id TQBit fresh
+          modify $ \env -> env { pathsum = identity (length args) }
+          simStmt 1 body
+          gatePS <- gets pathsum                                                                                         
+          popEnv
+          modify $ \env -> env { pathsum = ps , density = density , qwidth = qwidth }
+          return $ gatePS
+        _ -> error $ gid ++ " is not a gate"
   where
     toRad = fromDyadic . discretize . Continuous . floatOfValue
 
