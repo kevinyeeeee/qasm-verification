@@ -95,11 +95,11 @@ getPolyOfValue v = case v of
   VInt  0     -> return $ Just 0
   _ -> return Nothing
 
-getPolyListOfValue :: Value -> State Env [SBool Var]
+getPolyListOfValue :: Value -> State Env (Maybe [SBool Var])
 getPolyListOfValue v = case v of
-  VInt n      -> return $ makeSNat (toInteger n)
-  VCReg i j   -> mapM getOutPoly [i..i+j-1]
-  VPolyList l -> return l
+  VInt n      -> return $ Just $ makeSNat (toInteger n)
+  VCReg i j   -> liftM Just $ mapM getOutPoly [i..i+j-1]
+  VPolyList l -> return $ Just l
   _ -> error $ show v
 
 intOfValue :: Value -> Int
@@ -431,19 +431,41 @@ reduceExpr expr = case expr of
       (AndOp   , VPoly p1    , VPoly p2    ) -> return $ VPoly $ head (sAnd [p1] [p2])
       (OrOp    , VPoly p1    , VPoly p2    ) -> return $ VPoly $ head (sOr [p1] [p2])
       (XorOp   , VPoly p1    , VPoly p2    ) -> return $ VPoly $ head (sXor [p1] [p2])
-      (EqOp    , VCBit _     , _           ) -> do
+      (PlusOp  , v1          , v2          ) -> do
+        pl1 <- getPolyListOfValue v1
+        pl2 <- getPolyListOfValue v2
+        case (pl1, pl2) of
+          (Just pl1, Just pl2) -> return $ VPolyList (sPlus pl1 pl2)
+          _                    -> return $ VFloat (floatOfValue v1 + floatOfValue v2)
+      (EqOp    , v1          , v2          ) -> do
         p1 <- getPolyOfValue v1
         p2 <- getPolyOfValue v2
-        return $ VPoly (sEq [fromJust p1] [fromJust p2])
-      (EqOp    , VCReg _ _   , _           ) -> do
-        p1 <- getPolyListOfValue v1
-        p2 <- getPolyListOfValue v2
-        return $ VPoly (sEq p1 p2)
+        case (p1, p2) of
+          (Just p1, Just p2) -> return $ VPoly (sEq [p1] [p2])
+          _                  -> do
+            pl1 <- getPolyListOfValue v1
+            pl2 <- getPolyListOfValue v2
+            case (pl1, pl2) of
+              (Just pl1, Just pl2) -> return $ VPoly (sEq pl1 pl2)
+              _                    -> do
+                return $ VBool (floatOfValue v1 == floatOfValue v2)
+      (LEqOp   , v1          , v2          ) -> do
+        pl1 <- getPolyListOfValue v1
+        pl2 <- getPolyListOfValue v2
+        case (pl1, pl2) of
+          (Just pl1, Just pl2) -> return $ VPoly (sLEq pl1 pl2)
+          _                    -> do
+            return $ VBool (floatOfValue v1 <= floatOfValue v2)
       (TimesOp, VPoly p1     , VPoly p2    ) -> return $ VPoly (p1 * p2)
       (TimesOp, v1           , v2          ) -> return $ VFloat (floatOfValue v1 * floatOfValue v2)
       (DivOp  , v1           , v2          ) -> return $ VFloat (floatOfValue v1 / floatOfValue v2)
       _ -> error $ show v1 ++ " " ++ show bop ++ " " ++ show v2 ++ "  type: " ++ show t
-  _ -> error "todo?"
+  ECall {} -> do
+    v <- simExpr 1 expr
+    case v of
+      Just v  -> return v
+      Nothing -> return VUnit
+  _ -> error $ show expr
       
 simStmt :: SBool Var -> Stmt ElaboratedType -> State Env (Maybe Value)
 simStmt p stmt = case stmt of
@@ -593,7 +615,7 @@ simKet expr = case expr of
       Just p  -> return $ Pathsum 0 0 1 0 0 [p]
       Nothing -> do
         pList <- getPolyListOfValue v
-        return $ Pathsum 0 0 (length pList) 0 0 pList
+        return $ Pathsum 0 0 (length pList) 0 0 (fromJust pList)
   EBOp _ e1 PlusOp e2 -> do
     ps1 <- simKet e1
     ps2 <- simKet e2
@@ -644,7 +666,7 @@ exprToSBV :: Expr ElaboratedType -> State Env (SBool Var)
 exprToSBV e = reduceExpr e >>= getPolyOfValue >>= return . fromJust
 
 exprToSBVList :: Expr ElaboratedType -> State Env [SBool Var]
-exprToSBVList e = reduceExpr e >>= getPolyListOfValue
+exprToSBVList e = reduceExpr e >>= getPolyListOfValue >>= return . fromJust
 
 exprToPhasePoly :: Expr ElaboratedType -> State Env (PseudoBoolean Var DMod2)
 exprToPhasePoly = liftM (cast fromDyadic) . exprToDyadicPoly

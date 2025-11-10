@@ -498,6 +498,7 @@ exprFromSpec = efs
     efs x (Spec.Tensor e1 e2) = Tensor x (efs x e1) (efs x e2)
     efs x (Spec.Compose e1 e2) = Compose x (efs x e1) (efs x e2)
     efs x (Spec.Dagger e') = Dagger x (efs x e')
+    efs x (Spec.Call f es) = ECall x f (map (efs x) es)
 
     bfs Spec.Plus = PlusOp
     bfs Spec.Minus = MinusOp
