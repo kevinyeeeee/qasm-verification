@@ -546,7 +546,7 @@ verifyDef' pre post refs bindings body = do
       qwidth <- getQWidth
       let offsets' = if isQuantum (typeof path) then offsets ++ (map (+qwidth) offsets) else offsets
       env <- get
-      --Trace.trace (show (grind t) ++ " " ++ show path ++ " " ++ show expr) (return ())
+      --Trace.trace ( show t ++ " " ++ show (inDeg t) ++ show (outDeg t) ++ " " ++ show offsets') (return ())
       modify $ \env -> env { pathsum = applyOn t offsets' (pathsum env) }
 
     applyRefinement ref = do
@@ -595,10 +595,17 @@ simKet :: Expr ElaboratedType -> State Env (Pathsum DMod2)
 simKet expr = case expr of
   Tensor _ e1 e2          -> liftM2 (<>) (simKet e1) (simKet e2)
   Sum _ svars e           -> do
-    ps <- simKet e
     let (ids, typs) = unzip svars
     typs <- mapM (traverse $ typeExprToType) typs
-    let svars = zip ids typs 
+    let svars = zip ids (map (fromMaybe TBool) typs) 
+    pushEmptyEnv
+    forM svars $ \(id, ty) -> case ty of
+      TBool   -> let v = VPoly (ofVar $ FVar id) in do
+        bindVar id $ Scalar ty v
+      TUInt (Just n) -> let v = VPolyList [ ofVar $ FVar (varOfOffset id i) | i <- [0..n-1] ] in do
+        bindVar id $ Scalar ty v
+    ps <- simKet e
+    popEnv
     return $ sumOver svars ps
   EUOp _ ExpOp e          -> do
     pp <- exprToPhasePoly e
@@ -615,7 +622,7 @@ simKet expr = case expr of
       Just p  -> return $ Pathsum 0 0 1 0 0 [p]
       Nothing -> do
         pList <- getPolyListOfValue v
-        return $ Pathsum 0 0 (length pList) 0 0 (fromJust pList)
+        return $ Pathsum 0 0 (length $ fromJust pList) 0 0 (fromJust pList)
   EBOp _ e1 PlusOp e2 -> do
     ps1 <- simKet e1
     ps2 <- simKet e2
@@ -715,11 +722,10 @@ exprToBoolPolyList e = case e of
     return $ sPlus p1 p2
   x -> error $ show x
 
-sumOver :: [(ID, Maybe Type)] -> Pathsum DMod2 -> Pathsum DMod2
+sumOver :: [(ID, Type)] -> Pathsum DMod2 -> Pathsum DMod2
 sumOver svars = sumover (concatMap go svars) where
-  go (vid, Nothing)               = [vid]
-  go (vid, Just TBool)            = [vid]
-  go (vid, Just (TUInt (Just n))) = [varOfOffset vid i | i <- [0..n-1]]
+  go (vid, TBool)            = [vid]
+  go (vid, (TUInt (Just n))) = [varOfOffset vid i | i <- [0..n-1]]
 
 simBlock :: SBool Var -> [Stmt ElaboratedType] -> State Env (Maybe Value)
 simBlock p = foldM f Nothing
