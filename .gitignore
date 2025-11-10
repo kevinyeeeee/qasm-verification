@@ -8,6 +8,7 @@ feyn
 feyn-prof
 feynopt
 feynver
+tcqasm
 
 # folders
 dist/
