@@ -10,7 +10,7 @@ import Feynman.Frontend.OpenQASM3.Simulation
 
 tcFile :: String -> IO ()
 tcFile src = case QASM3Parser.parseString src of
-    QASM3Chatty.Failure _ err -> putStrLn $ "Parse error: " ++ err
+    QASM3Chatty.Failure _ err -> error ("Parse error: " ++ err)
     QASM3Chatty.Value _ qasm -> case translateProg qasm of
       Left error -> printErrors [error]
       Right prog -> case tcQasm prog of

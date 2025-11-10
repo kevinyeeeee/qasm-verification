@@ -42,9 +42,9 @@ def clean(s):
         else:
             return "{:.2f}".format(float(s))
     elif s == "timeout":
-        return "\\incorrect"
+        return "timeout"
     elif s == "error":
-        return "\\incorrect"
+        return "error"
     else:
         return s
 
@@ -57,12 +57,8 @@ def average(lst):
 
 
 TEST_EXT = '.qasm'
-BASELINE_EXT = '.out'
 BASE_FLAGS = []
-TIMEOUT_TIME = 120
-CORRECT_TIMEOUT_TIME = 120
-STILL_WORK_TIMEOUT_TIME = 120
-GENERATE_EXAMPLES_TIMEOUT_TIME = 600000
+TIMEOUT_TIME = 300
 
 REPETITION_COUNT = 10
 
@@ -73,14 +69,6 @@ def ensure_dir(f):
 
 def transpose(matrix):
     return list(zip(*matrix))
-
-def check_equal(prog,path,base,data):
-    infofname = join(path,base + TEST_EXT)
-    exfname = join(path,base + BASELINE_EXT)
-    temp_name = "temp.out"
-    simple_write_to_file(temp_name,data)
-    (time,datum,err) = gather_datum(prog, path, base, ["-check-equiv1",exfname,"-check-equiv2",temp_name], CORRECT_TIMEOUT_TIME)
-    return err == ""
 
 def find_tests(root):
     tests = []
@@ -101,16 +89,16 @@ def find_subs(root):
         groupings.append((direct,positives,posndfs,negatives,negndfs))
     return groupings
 
-def gather_datum(prog, path, base, additional_flags, timeout):
+def gather_datum(prog_call, path, base, additional_flags, timeout):
     start = time.time()
     flags = additional_flags
     #flags = map(lambda t: t(path,base),additional_flags)
-    print([prog] + BASE_FLAGS + flags + [join(path, base + TEST_EXT)])
-    process_output = EasyProcess([prog] + BASE_FLAGS + flags + [join(path, base + TEST_EXT)]).call(timeout=timeout+5)
+    print(prog_call + BASE_FLAGS + flags + [join(path, base + TEST_EXT)])
+    process_output = EasyProcess(prog_call + BASE_FLAGS + flags + [join(path, base + TEST_EXT)]).call(timeout=timeout+5)
     end = time.time()
     return ((end - start), process_output.stdout,process_output.stderr)
 
-def gather_data(rootlength, prog, path, base,name,run_smyth):
+def gather_data(path, base, name):
     current_data = {"Test":name}
 
     def gather_col(flags, run_combiner, col_names, timeout_time, repetition_count, compare):
@@ -121,9 +109,10 @@ def gather_data(rootlength, prog, path, base,name,run_smyth):
         memout = False
         iteration = 0
         for iteration in range(repetition_count):
-            (time,datum,err) = gather_datum(prog, path, base,flags,timeout_time)
+            (time,datum,err) = gather_datum(["cabal","run","tcqasm"], path, base, flags,timeout_time)
             print(time)
-            if err != "":
+            if [line for line in err.splitlines() if not line.startswith("verification success:")] != []:
+                print(err)
                 error = True
                 break
             if time >= TIMEOUT_TIME:
@@ -138,7 +127,7 @@ def gather_data(rootlength, prog, path, base,name,run_smyth):
             run_data.append(this_run_data)
             iteration = iteration+1
         if error:
-            print("\\incorrect")
+            print("error")
             for col_name in col_names:
                 if "ComputationTime" in col_name:
                     current_data[col_name]="\\incorrect"
@@ -177,10 +166,7 @@ def gather_data(rootlength, prog, path, base,name,run_smyth):
         averages = [average(col) for col in cols]
         return averages
 
-    gather_col([],ctime_combiner,["IsectTotal","IsectMax","MinifyTotal","MinifyMax","MinEltTotal","MinEltMax","InitialCreationTotal","InitialCreationMax","AcceptsTermTotal","AcceptsTermMax","LoopCount","FullSynth","FullSynthMax","ComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
-    if run_smyth:
-        gather_col(["-use-smyth"],ctime_combiner,["SmythIsectTotal","SmythIsectMax","SmythMinifyTotal","SmythMinifyMax","SmythMinEltTotal","SmythMinEltMax","SmythInitialCreationTotal","SmythInitialCreationMax","SmythAcceptsTermTotal","SmythAcceptsTermMax","SmythLoopCount","SmythFullSynth","SmythFullSynthMax","SmythComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
-    gather_col(["-use-simple"],ctime_combiner,["SimpleIsectTotal","SimpleIsectMax","SimpleMinifyTotal","SimpleMinifyMax","SimpleMinEltTotal","SimpleMinEltMax","SimpleInitialCreationTotal","SimpleInitialCreationMax","SimpleAcceptsTermTotal","SimpleAcceptsTermMax","SimpleLoopCount","SimpleFullSynth","SimpleFullSynthMax","SimpleComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
+    gather_col([],ctime_combiner,["ComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
 
     return current_data
 
@@ -210,7 +196,7 @@ def print_data(data,name):
         datawriter.writerows(data)
 
 def print_usage(args):
-    print("Usage: {0} <prog> <example_based> <equivalence_dir> <postconditional_dir>".format(args[0]))
+    print("Usage: {0} <benchmark_dir>".format(args[0]))
 
 def load_data(name):
     try:
@@ -221,19 +207,19 @@ def load_data(name):
         return []
 
 def main(args):
-    if len(args) == 3:
-        prog = args[1]
-        benchmark_path = args[2]
+    if len(args) == 2:
+        benchmark_path = args[1]
         data = load_data("data.csv")
         print("existing data")
         print(data)
         rootlength = len(benchmark_path)
-        if os.path.exists(prog) and os.path.exists(benchmark_path) and os.path.isdir(example_based_path):
+        if os.path.exists(benchmark_path) and os.path.isdir(benchmark_path):
             for path, base in find_tests(benchmark_path):
-                test_name = join(path, base).replace("_","-")[rootlength+1:]
+                assert(join(path, base)[rootlength-1] == '/')
+                test_name = join(path, base).replace("_","-")[rootlength:]
                 print(test_name)
                 if (not (any(row["Test"] == test_name for row in data))):
-                    current_data = gather_data(rootlength,prog, path, base,test_name,True)
+                    current_data = gather_data(path, base, test_name)
                     data.append(current_data)
                     print_data(data,"data.csv")
                 else:
@@ -241,7 +227,7 @@ def main(args):
             sort_data(data)
             print_data(data,"data.csv")
         else:
-            print(os.path.exists(prog))
+            print(args)
             print_usage(args)
     else:
         print_usage(args)

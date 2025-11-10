@@ -14,5 +14,11 @@ feynver:
 	cabal build exe:feynver
 	cp dist/build/feynver/feynver ./feynver
 
-generate-data: all
-	python3 generate-data.py ./feynopt benchmarks/pldi26
+generate-data:
+	cabal build tcqasm && python3 generate-data.py benchmarks/pldi/
+
+regenerate-data:
+	rm -rf generated-data/* && cabal build tcqasm && python3 generate-data.py benchmarks/pldi/
+
+clean-data:
+	rm -rf generated-data/*
