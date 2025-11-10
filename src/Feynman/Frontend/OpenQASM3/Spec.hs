@@ -11,6 +11,8 @@ module Feynman.Frontend.OpenQASM3.Spec where
 
 import Control.Monad
 
+import Data.List
+
 import Feynman.Core (ID)
 import Feynman.Algebra.Base (Dyadic(..), DyadicRational, DMod2)
 
@@ -19,9 +21,9 @@ import Feynman.Algebra.Base (Dyadic(..), DyadicRational, DMod2)
 data BOp = Plus | Minus | Times | Div | Mod | Pow
          | LShift | RShift | LRot | RRot
          | Equal | LessThan | LessEq | GreaterThan | GreaterEq | And | Or
-         deriving (Show)
+         deriving (Eq, Show)
 
-data UOp = Neg | Wt | Exp | Sqrt deriving (Show)
+data UOp = Neg | Wt | Exp | Sqrt deriving (Eq, Show)
 
 -- | Classical types which can be in superposition
 --
@@ -30,16 +32,21 @@ data UOp = Neg | Wt | Exp | Sqrt deriving (Show)
 --
 --   The literals 0 and 1 are overloaded as both bits and
 --   integers
-data Type = Bit | Reg SExpr | UInt SExpr | Refined Type SExpr deriving Show
+data Type = Bit | Reg SExpr | UInt SExpr | Refined Type SExpr deriving (Eq, Show)
+
+-- | L Values
+data LVal = LVal ID (Maybe Int) deriving (Eq, Show)
 
 -- | Sum-over-path expressions
 data SExpr = Var ID (Maybe SExpr)
            | VarDec ID Type
            | ILit Int
+           | BSLit String
            | RLit Double
            | Pi
            | BExp SExpr BOp SExpr
            | UExp UOp SExpr
+           | Call ID [SExpr]
            -- Sum terms
            | Ket SExpr
            | Fun [(ID,Maybe Type)] SExpr
@@ -47,23 +54,62 @@ data SExpr = Var ID (Maybe SExpr)
            | Tensor SExpr SExpr
            | Compose SExpr SExpr
            | Dagger SExpr
-           | Paths [SExpr]
-           deriving (Show)
+           deriving (Eq, Show)
+
+-- | Function. Special case of assertions
+data Mapping = Mapping SExpr SExpr deriving (Eq,Show)
 
 -- | Assertions. Conjunctions of assertions are represented as lists
-data Assertion = Equals SExpr SExpr deriving (Show)
+data Assertion = Pointsto [SExpr] SExpr
+               | Pure SExpr
+               | Discard [SExpr]
+               deriving (Eq, Show)
+
+-- | Assertions in normal form
+data NFAssertion = NFAssertion {
+  qaps     :: [SExpr],
+  qstate   :: SExpr,
+  preds    :: SExpr,
+  refines  :: SExpr,
+  discards :: [SExpr]
+  } deriving (Eq, Show)
+
+-- | The empty assertion
+emp :: NFAssertion
+emp = NFAssertion [] (ILit 1) (ILit 1) (ILit 1) []
 
 {- Transformations -}
 
--- | Erases all refinements within an assertion
-eraseRefinements :: Assertion -> Assertion
-eraseRefinements (Equals lval rval) = Equals lval rval' where
-  rval' = case go rval of
-    (rval, Nothing)   -> rval
-    (rval, Just refs) -> Tensor rval refs
+-- | Normalizes all assertions
+normalizeAssertions :: [Assertion] -> NFAssertion
+normalizeAssertions = eraseRefinements . foldr go emp where
+  go assrt nf = case assrt of
+    Pointsto aps exprs ->
+      if not (intersect aps (qaps nf ++ discards nf) == [])
+      then error "Assertion references same qubit twice"
+      else nf { qaps = aps ++ (qaps nf),
+                qstate = if (qstate nf) == ILit 1 then exprs else Tensor exprs (qstate nf) }
+    Pure expr   ->
+      if (preds nf) == ILit 1
+      then nf { preds = expr }
+      else nf { preds = BExp expr And (preds nf) }
+    Discard aps ->
+      if not (intersect aps (qaps nf ++ discards nf) == [])
+      then error "Assertion references same qubit twice"
+      else nf { discards = aps ++ (discards nf) }
 
-  sumOfRef exp = Sum [("%%%", Just Bit)] $ UExp Exp exponent where
-    exponent = BExp (Var "%%%" Nothing) And (UExp Neg exp)
+  eraseRefinements nf = case collectRefinements (qstate nf) of
+    (qstate', Nothing) -> nf { qstate = qstate' }
+    (qstate', Just p)  -> nf { qstate = Sum [("%%%", Just Bit)] $ Tensor p qstate', refines = p }
+
+-- | Maps a Boolean expression to a path sum
+toPredicate :: SExpr -> SExpr
+toPredicate exp = UExp Exp exponent where
+  exponent = BExp (Var "%%%" Nothing) And (UExp Neg exp)
+
+-- | Collects all refinements on free variables
+collectRefinements :: SExpr -> (SExpr, Maybe SExpr)
+collectRefinements = go where
 
   combineRefs r1 r2 = case (r1, r2) of
     (Just r1', Just r2') -> Just $ Tensor r1' r2'
@@ -73,7 +119,7 @@ eraseRefinements (Equals lval rval) = Equals lval rval' where
   collectRefs ty = case ty of
     Just (Refined ty exp) ->
       let (ty', refs) = collectRefs (Just ty) in
-        (ty', combineRefs (Just $ sumOfRef exp) refs)
+        (ty', combineRefs (Just $ exp) refs)
     _               -> (ty, Nothing)
 
   processDecs :: [(ID, Maybe Type)] -> ([(ID, Maybe Type)], Maybe SExpr)

@@ -21,6 +21,7 @@ tokens :-
   popcount                                                  { \s -> TPopcount }
   exp                                                       { \s -> TExp }
   sqrt                                                      { \s -> TSqrt }
+  discard                                                   { \s -> TDiscard }
   fun                                                       { \s -> TFun }
   sum                                                       { \s -> TSum }
   \~                                                        { \s -> TNeg }
@@ -54,12 +55,14 @@ tokens :-
   \>\=                                                      { \s -> TRAngleEq }
   \=\=                                                      { \s -> TEquals }
   \!\=                                                      { \s -> TNEquals }
+  \~\>                                                      { \s -> TPointsto }
   \&\&                                                      { \s -> TAnd }
   \&                                                        { \s -> TSepAnd }
   \|\|                                                      { \s -> TOr }
-  [a-z]($digit|$alpha)*                                     { \s -> TID s }
+  [a-zA-Z]($digit|$alpha)*                                  { \s -> TID s }
   ($digit+\.$digit*|$digit*\.$digit+)([eE][\-\+]?$digit+)?  { \s -> TReal (read s) }
   [\-]*[1-9]$digit*|0                                       { \s -> TInt (read s) }
+  \"[01][01]*\"                                             { \s -> TBitstring s }
 
 {
 
@@ -71,6 +74,7 @@ data Token =
   | TPopcount
   | TExp
   | TSqrt
+  | TDiscard
   | TFun
   | TSum
   -- Unary operators
@@ -92,6 +96,7 @@ data Token =
   | TRAngleEq
   | TEquals
   | TNEquals
+  | TPointsto
   | TAnd
   | TOr
   | TSepAnd
@@ -112,7 +117,8 @@ data Token =
   -- identifiers & literals
   | TID String
   | TReal Double
-  | TInt Int 
+  | TInt Int
+  | TBitstring String
   deriving (Eq,Show)
 
 lexer :: String -> [Token]

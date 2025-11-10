@@ -1267,8 +1267,8 @@ canonicalizeKet sop = go sop 0 0 where
              | j >= pathVars sop = sop
              | otherwise         = case filter (cond j) . solveForX $ (outVals sop)!!i of
                  []             -> go sop (i+1) j
-                 ((PVar j),p):_ ->
-                   go (swapVar i j $ applyVar (PVar j) (p + ofVar (PVar j)) sop) (i+1) (j+1)
+                 ((PVar k),p):_ ->
+                   go (swapVar j k $ applyVar (PVar k) (p + ofVar (PVar k)) sop) (i+1) (j+1)
 
   cond j (v,p) = isP v && unP v >= j
 
@@ -1321,8 +1321,12 @@ normalizeClifford sop = go $ sop .> hLayer .> hLayer where
 -- | Decision procedure for equivalence via fallback to variable expansion
 (~~=) :: Pathsum DMod2 -> Pathsum DMod2 -> Bool
 (~~=) a b = a' == b' || go a' b' where
-  a' = canonicalizeKet . dropScalars . grind . vectorize . bind fv $ a
-  b' = canonicalizeKet . dropScalars . grind . vectorize . bind fv $ b
+  a' = dropScalars . reduce . vectorize . bind fv $ a
+  b' = dropScalars . reduce . vectorize . bind fv $ b
+
+  reduce x = let x' = canonicalizeKet . grind $ x in
+    if x == x' then x else reduce x'
+
   fv = union (freeVars a) (freeVars b)
 
   go a b | a == b               = True
