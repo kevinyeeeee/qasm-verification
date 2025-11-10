@@ -1321,8 +1321,12 @@ normalizeClifford sop = go $ sop .> hLayer .> hLayer where
 -- | Decision procedure for equivalence via fallback to variable expansion
 (~~=) :: Pathsum DMod2 -> Pathsum DMod2 -> Bool
 (~~=) a b = a' == b' || go a' b' where
-  a' = canonicalizeKet . dropScalars . grind . vectorize . bind fv $ a
-  b' = canonicalizeKet . dropScalars . grind . vectorize . bind fv $ b
+  a' = dropScalars . reduce . vectorize . bind fv $ a
+  b' = dropScalars . reduce . vectorize . bind fv $ b
+
+  reduce x = let x' = canonicalizeKet . grind $ x in
+    if x == x' then x else reduce x'
+
   fv = union (freeVars a) (freeVars b)
 
   go a b | a == b               = True
