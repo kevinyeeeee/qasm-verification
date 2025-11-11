@@ -176,14 +176,14 @@ def ctrl_mul_mod_N_oo_place(
   uint t  = uint(a) % N;        // t = a mod N initially.
   for uint i in [0:n-1]{        // For each control bit X[i], conditionally add constant t to Y (mod N).
     for uint j in [0:n-1] {     // If c~>1, load A := X[i] * t (mask-and-add pattern).
-      if ( ((t >> j) , 1) ~>  1 ) {
+      if ( ((t >> j) , 1) ==  1 ) {
         ccx c, X[i], A[j];      // Single-control load of the j-th bit of t into A[j] if X[i]=1
       }
     }
                                 //  Unconditional modular add: Y <- Y + A (mod N)
     add_mod_N_in_place(A, Y, CONST_N, CONST_TN, anc, f_1, f_2);
     for uint j in [0:n-1] {     //  Uncompute A register.
-      if ( ((t >> j) , 1) ~>  1 ) {
+      if ( ((t >> j) , 1) ==  1 ) {
         ccx c, X[i], A[j];      // Single-control load of the j-th bit of t into A[j] if X[i]=1
       }
     }
@@ -192,7 +192,7 @@ def ctrl_mul_mod_N_oo_place(
 }
 def mod_inv(uint a)-> uint{     // As a,N are coprime, the existence of an inverse is guaranteed. 
   for uint i in [1:N-1]{        // An efficient way to find this is the extended euclidean algorithm, but this also works. 
-    if (a*i % N ~>  1){
+    if (a*i % N ==  1){
       return i;
     }
   }
@@ -273,14 +273,14 @@ def modular-exponentiation(
   ){
   uint TN = (1<<n) - N;     // =2^n - N
   for uint i in [0:n-1] {   // Initialize “constant registers”.
-    if (((int(N)  >> i) , 1) ~> 1) { x CONST_N[i]; }
-    if (((int(TN) >> i) , 1) ~> 1) { x CONST_TN[i]; }
+    if (((int(N)  >> i) , 1) == 1) { x CONST_N[i]; }
+    if (((int(TN) >> i) , 1) == 1) { x CONST_TN[i]; }
   }
   for uint i in [0:csize-1] {
     ctrl_mul_mod_N_in_place (a*(1<<i), control[i], target, CONST_N, CONST_TN, anc_reg_1, anc_reg_2,anc_1, anc_2,anc_3 );
   }
   for uint i in [0:n-1] {    // Reset “constant registers”.
-    if (((int(N)  >> i) , 1) ~> 1) { x CONST_N[i]; }
-    if (((int(TN) >> i) , 1) ~> 1) { x CONST_TN[i]; }
+    if (((int(N)  >> i) , 1) == 1) { x CONST_N[i]; }
+    if (((int(TN) >> i) , 1) == 1) { x CONST_TN[i]; }
   }
 }
