@@ -8,24 +8,24 @@ const uint[n] a = 3;
 const uint csize = 6;               // The size of the control register determines the accuracy of the rational approximation.
 
                                     // Variables inside ket are bit-variables by default, so + is XOR and * is AND.
-@pre    a ==  |qa>                & b ==  |qb>    & c ==  |qc>
-@post   a ==  |qa*qb+qa*qc+qb*qc> & b ==  |qa+qb> & c ==  |qa+qc>
+@pre    a ~>  |qa:bit>            , b ~>  |qb:bit>, c ~>  |qc:bit>
+@post   a ~>  |qa*qb+qa*qc+qb*qc> , b ~>  |qa+qb> , c ~>  |qa+qc>
 gate maj a, b, c {                  // In-place majority
   cx a, b;
   cx a, c; 
   ccx c, b, a;                      // a=|x+(x+y)*(x+z)>
 }
 
-@pre    a ==  |qa*qb+qa*qc+qb*qc> & b ==  |qa+qb> & c ==  |qa+qc>
-@post   a ==  |qa>                & b ==  |qb>    & c ==  |qc>
+@pre    a ~>  |qa*qb+qa*qc+qb*qc> , b ~>  |qa+qb> , c ~>  |qa+qc>
+@post   a ~>  |qa>                , b ~>  |qb>    , c ~>  |qc>
 gate unmaj a, b, c {                // Inverse of MAJ
   ccx c, b, a;   
   cx  a, c;
   cx  a, b;
 }
 
-@pre    a ==  |qa*qb+qa*qc+qb*qc> & b ==  |qa+qb>     & c ==  |qa+qc>
-@post   a ==  |qa>                & b ==  |qa+qb+qc>  & c ==  |qc>
+@pre    a ~>  |qa*qb+qa*qc+qb*qc> , b ~>  |qa+qb>     , c ~>  |qa+qc>
+@post   a ~>  |qa>                , b ~>  |qa+qb+qc>  , c ~>  |qc>
 gate uma a, b, c{                   // Unmajority and add (2-CNOT form)
   ccx c, b, a;
   cx a, c;      
@@ -37,8 +37,8 @@ def carry(uint[n] a, uint[n] b)-> bit{
 }
 
                                       // a,b are typed as uint so + is the sum rather than XOR
-@pre    A ==  |a:uint[n]> & B ==  |b:uint[n]>  & Z ==  |z>            & X ==  |0>
-@post   A ==  |a>         & B ==  |a+b>        & Z ==  |z+carry(a,b)> & X ==  |0>
+@pre    A ~>  |a:uint[n]> , B ~>  |b:uint[n]>  , Z ~>  |z:bit>        , X ~>  |0>
+@post   A ~>  |a>         , B ~>  |a+b>        , Z ~>  |z+carry(a,b)> , X ~>  |0>
 def cuccaro(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
     maj A[0], B[0], X;                // Forward MAJ ripple
     for uint i in [1:n-1] {
@@ -52,8 +52,8 @@ def cuccaro(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
     uma A[0], B[0], X;
 }
 
-@pre    control ==  |c> & A ==  |a:uint[n]>  & B ==  |b:uint[n]>  & anc ==  |0>
-@post   control ==  |c> & A ==  |a>          & B ==  |a+c*b>      & anc ==  |0>
+@pre    control ~>  |c:bit> , A ~>  |a:uint[n]>  , B ~>  |b:uint[n]>  , anc ~>  |0>
+@post   control ~>  |c> ,     A ~>  |a>          , B ~>  |a+c*b>      , anc ~>  |0>
 def ctrl_cuccaro_no_carry(
   qubit control, 
   qubit[n] A, 
@@ -70,8 +70,8 @@ def ctrl_cuccaro_no_carry(
     ctrl @ uma control, A[0], B[0], anc;
 }
 
-@pre    A ==  |a:uint[n]> & B ==  |b:uint[n]>  & f ==  |0>            & anc==|0>
-@post   A ==  |a>         & B ==  |b>          & f ==  |z+carry(a,b)> & anc==|0>
+@pre    A ~>  |a:uint[n]> , B ~>  |b:uint[n]>  , f ~>  |0>            , anc ~> |0>
+@post   A ~>  |a>         , B ~>  |b>          , f ~>  |z+carry(a,b)> , anc ~> |0>
 def cuccaro_carry_only(qubit[n] A,    
                   qubit[n] B,      
                   qubit anc,         
@@ -89,8 +89,8 @@ def lt(uint[n] a, uint[n] b)->bit{
   return a<b;
 }
 
-@pre    A ==  |a:uint[n]> & B ==  |b:uint[n]>  & Z ==  |0>          & X ==  |0>
-@post   A ==  |a>         & B ==  |b>          & Z ==  |z+lt(a,b)>  & X ==  |0>
+@pre    A ~>  |a:uint[n]> , B ~>  |b:uint[n]>  , Z ~>  |0>          , X ~>  |0>
+@post   A ~>  |a>         , B ~>  |b>          , Z ~>  |z+lt(a,b)>  , X ~>  |0>
 def sub_cuccaro_carry_only(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
     uma A[0], B[0], X;                // Forward UMA  ripple 
     for uint i in [1:n-1] {
@@ -104,23 +104,23 @@ def sub_cuccaro_carry_only(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
     inv @ uma A[0], B[0], X;
 }
 
-@pre A        ==  |r  :uint[n]> 
-  & B        ==  |s  :uint[n]> 
-  & CONST_N  ==  |N  :uint> 
-  & CONST_TN ==  |TN :uint> 
-  & anc      ==  |0>
-  & f_1      ==  |0>
-  & f_2      ==  |0>
-  & 0 <= N   &  N<(1<<n) 
-  & 0 <= TN  &  TN<(1<<n)
-  & N+TN     ==  (1<<n)
-@post A       ==  |r> 
-  & B        ==  |int(r)+int(s)%N> 
-  & CONST_N  ==  |N> 
-  & CONST_TN ==  |TN> 
-  & anc      ==  |0>
-  & f_1      ==  |0>
-  & f_2      ==  |0>
+@pre A       ~>  |r  :uint[n]> 
+  , B        ~>  |s  :uint[n]> 
+  , CONST_N  ~>  |N  :uint> 
+  , CONST_TN ~>  |TN :uint> 
+  , anc      ~>  |0>
+  , f_1      ~>  |0>
+  , f_2      ~>  |0>
+  , 0 <= N   ,  N<(1<<n) 
+  , 0 <= TN  ,  TN<(1<<n)
+  , N+TN     ~>  (1<<n)
+@post A       ~>  |r> 
+  , B        ~>  |int(r)+int(s)%N> 
+  , CONST_N  ~>  |N> 
+  , CONST_TN ~>  |TN> 
+  , anc      ~>  |0>
+  , f_1      ~>  |0>
+  , f_2      ~>  |0>
 def add_mod_N_in_place(
   qubit[n] A,         //=|r>
   qubit[n] B,         //=|s>
@@ -139,27 +139,27 @@ def add_mod_N_in_place(
   sub_cuccaro_carry_only(A,B,anc,f_2);
 }
 
-@pre c        ==  |c> 
-  & X        ==  |xval  :uint[n]>
-  & Y        ==  |yval  :uint[n]> 
-  & CONST_N  ==  |N  :uint> 
-  & CONST_TN ==  |TN :uint> 
-  & A        ==  |0  :uint[n]>
-  & anc      ==  |0>
-  & f_1      ==  |0>
-  & f_2      ==  |0>
-  & 0 < N    &  N<(1<<n) 
-  & 0 < TN   &  TN<(1<<n)
-  & N+TN     ==  1<<n
-@post c       ==  |c> 
-  & X        ==  |xval>
-  & Y        ==  |(yval+c*a*xval)%N> 
-  & CONST_N  ==  |N> 
-  & CONST_TN ==  |TN> 
-  & A        ==  |0>
-  & anc      ==  |0>
-  & f_1      ==  |0>
-  & f_2      ==  |0>
+@pre c        ~>  |c> 
+  , X        ~>  |xval  :uint[n]>
+  , Y        ~>  |yval  :uint[n]> 
+  , CONST_N  ~>  |N  :uint> 
+  , CONST_TN ~>  |TN :uint> 
+  , A        ~>  |0  :uint[n]>
+  , anc      ~>  |0>
+  , f_1      ~>  |0>
+  , f_2      ~>  |0>
+  , 0 < N    ,  N<(1<<n) 
+  , 0 < TN   ,  TN<(1<<n)
+  , N+TN     ~>  1<<n
+@post c       ~>  |c> 
+  , X        ~>  |xval>
+  , Y        ~>  |(yval+c*a*xval)%N> 
+  , CONST_N  ~>  |N> 
+  , CONST_TN ~>  |TN> 
+  , A        ~>  |0>
+  , anc      ~>  |0>
+  , f_1      ~>  |0>
+  , f_2      ~>  |0>
 def ctrl_mul_mod_N_oo_place(
   uint[n] a,          // shadows global const uint[n] a
   qubit c,
@@ -175,15 +175,15 @@ def ctrl_mul_mod_N_oo_place(
                                 // Classical precomputation loop variable: t = a * 2^i mod N (updated each i)
   uint t  = uint(a) % N;        // t = a mod N initially.
   for uint i in [0:n-1]{        // For each control bit X[i], conditionally add constant t to Y (mod N).
-    for uint j in [0:n-1] {     // If c==1, load A := X[i] * t (mask-and-add pattern).
-      if ( ((t >> j) & 1) ==  1 ) {
+    for uint j in [0:n-1] {     // If c~>1, load A := X[i] * t (mask-and-add pattern).
+      if ( ((t >> j) , 1) ~>  1 ) {
         ccx c, X[i], A[j];      // Single-control load of the j-th bit of t into A[j] if X[i]=1
       }
     }
                                 //  Unconditional modular add: Y <- Y + A (mod N)
     add_mod_N_in_place(A, Y, CONST_N, CONST_TN, anc, f_1, f_2);
     for uint j in [0:n-1] {     //  Uncompute A register.
-      if ( ((t >> j) & 1) ==  1 ) {
+      if ( ((t >> j) , 1) ~>  1 ) {
         ccx c, X[i], A[j];      // Single-control load of the j-th bit of t into A[j] if X[i]=1
       }
     }
@@ -192,34 +192,34 @@ def ctrl_mul_mod_N_oo_place(
 }
 def mod_inv(uint a)-> uint{     // As a,N are coprime, the existence of an inverse is guaranteed. 
   for uint i in [1:N-1]{        // An efficient way to find this is the extended euclidean algorithm, but this also works. 
-    if (a*i % N ==  1){
+    if (a*i % N ~>  1){
       return i;
     }
   }
   return 0;
 }
 
-@pre c        ==  |c> 
-  & X        ==  |xval  :uint[n]>
-  & CONST_N  ==  |N  :uint> 
-  & CONST_TN ==  |TN :uint> 
-  & Y        ==  |0  :uint[n]> 
-  & A        ==  |0  :uint[n]>
-  & anc      ==  |0>
-  & f_1      ==  |0>
-  & f_2      ==  |0>
-  & 0 < N   &  N   < (1<<n) 
-  & 0 < TN  &  TN  < (1<<n)
-  & N+TN     ==  1<<n
-@post c       ==  |(c*a*xval)%N> 
-  & X        ==  |xval>
-  & CONST_N  ==  |N> 
-  & CONST_TN ==  |TN> 
-  & Y        ==  |0> 
-  & A        ==  |0>
-  & anc      ==  |0>
-  & f_1      ==  |0>
-  & f_2      ==  |0>
+@pre c        ~>  |c> 
+  , X        ~>  |xval  :uint[n]>
+  , CONST_N  ~>  |N  :uint> 
+  , CONST_TN ~>  |TN :uint> 
+  , Y        ~>  |0  :uint[n]> 
+  , A        ~>  |0  :uint[n]>
+  , anc      ~>  |0>
+  , f_1      ~>  |0>
+  , f_2      ~>  |0>
+  , 0 < N   ,  N   < (1<<n) 
+  , 0 < TN  ,  TN  < (1<<n)
+  , N+TN     ~>  1<<n
+@post c       ~>  |(c*a*xval)%N> 
+  , X        ~>  |xval>
+  , CONST_N  ~>  |N> 
+  , CONST_TN ~>  |TN> 
+  , Y        ~>  |0> 
+  , A        ~>  |0>
+  , anc      ~>  |0>
+  , f_1      ~>  |0>
+  , f_2      ~>  |0>
 def ctrl_mul_mod_N_in_place(
   uint[n] a,          
   qubit c,            
@@ -244,21 +244,21 @@ def ctrl_mul_mod_N_in_place(
   ctrl_mul_mod_N_oo_place((N - ainv) % N, c, X, Y, CONST_N, CONST_TN, A, anc, f_1, f_2);
 }
 
-@pre control      ==  |j: uint[csize]> 
-  & target       ==  |1: uint[n]>
-  & CONST_N      ==  |0: uint[n]>
-  & CONST_TN     ==  |0: uint[n]>
-  & anc_1        ==  |0>
-  & anc_2        ==  |0>
-  & anc_3        ==  |0>
-  & 0 < N        &  N  <  (1<<n) 
+@pre control      ~>  |j: uint[csize]> 
+  , target       ~>  |1: uint[n]>
+  , CONST_N      ~>  |0: uint[n]>
+  , CONST_TN     ~>  |0: uint[n]>
+  , anc_1        ~>  |0>
+  , anc_2        ~>  |0>
+  , anc_3        ~>  |0>
+  , 0 < N        ,  N  <  (1<<n) 
 @post 
-  (control,target)==  |j>
-  & CONST_N      ==  |(a^j) % N>
-  & CONST_TN     ==  |0>
-  & anc_1        ==  |0>
-  & anc_2        ==  |0>
-  & anc_3        ==  |0>
+  (control,target)~>  |j>
+  , CONST_N      ~>  |(a^j) % N>
+  , CONST_TN     ~>  |0>
+  , anc_1        ~>  |0>
+  , anc_2        ~>  |0>
+  , anc_3        ~>  |0>
 def modular-exponentiation(
     uint csize,
     uint[n] a, 
@@ -273,14 +273,14 @@ def modular-exponentiation(
   ){
   uint TN = (1<<n) - N;     // =2^n - N
   for uint i in [0:n-1] {   // Initialize “constant registers”.
-    if (((int(N)  >> i) & 1) == 1) { x CONST_N[i]; }
-    if (((int(TN) >> i) & 1) == 1) { x CONST_TN[i]; }
+    if (((int(N)  >> i) , 1) ~> 1) { x CONST_N[i]; }
+    if (((int(TN) >> i) , 1) ~> 1) { x CONST_TN[i]; }
   }
   for uint i in [0:csize-1] {
     ctrl_mul_mod_N_in_place (a*(1<<i), control[i], target, CONST_N, CONST_TN, anc_reg_1, anc_reg_2,anc_1, anc_2,anc_3 );
   }
   for uint i in [0:n-1] {    // Reset “constant registers”.
-    if (((int(N)  >> i) & 1) == 1) { x CONST_N[i]; }
-    if (((int(TN) >> i) & 1) == 1) { x CONST_TN[i]; }
+    if (((int(N)  >> i) , 1) ~> 1) { x CONST_N[i]; }
+    if (((int(TN) >> i) , 1) ~> 1) { x CONST_TN[i]; }
   }
 }

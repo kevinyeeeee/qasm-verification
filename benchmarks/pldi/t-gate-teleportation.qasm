@@ -1,7 +1,7 @@
 include "stdgates.inc";
 
-@pre    tstate            == |0> & data               == |psi>
-@post   tstate            == |0> & data               == exp(1/4)*|psi>
+@pre    tstate            ~> |0> , data               ~> |psi:int[1]>
+@post   tstate            ~> |0> , data               ~> exp(psi/4)|psi>
 def t_gate_teleportation (qubit tstate, qubit data) {
     //prepare T-state
     h tstate;
@@ -17,3 +17,4 @@ def t_gate_teleportation (qubit tstate, qubit data) {
         s data;
     }
 }   
+
