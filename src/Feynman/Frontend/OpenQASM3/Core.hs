@@ -130,6 +130,7 @@ asTypeExpr a typ = case typ of
 -- | Classifies types as numeric
 isNumeric :: TypeExpr' a -> Bool
 isNumeric typeexpr = case typeexpr of
+  TBool         -> True
   TUInt  _      -> True
   TInt   _      -> True
   TFloat _      -> True

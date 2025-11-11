@@ -12,7 +12,7 @@ import Feynman.Core (ID, Angle(..), discretize)
 import Feynman.Frontend.OpenQASM3.Core
 import Feynman.Frontend.OpenQASM3.TypeCheck (ElaboratedType(EType,ty, isConstant), typeof)
 import Feynman.Algebra.Polynomial.Multilinear (SBool, ofVar, rename, PseudoBoolean, cast, constant, canonicalize, lift)
-import Data.Bits (Bits, testBit, xor, (.&.), (.>>.))
+import Data.Bits (Bits, testBit, xor, (.&.), shiftR)
 import Data.Complex ( Complex, imagPart, realPart )
 
 import qualified Feynman.Util.Unicode as U
@@ -395,6 +395,7 @@ reduceExpr expr = case expr of
       (GTOp    , VFloat f1, VFloat f2) -> return $ VBool $ f1 > f2
       (GEqOp   , VInt i1  , VInt i2  ) -> return $ VBool $ i1 >= i2
       (GEqOp   , VFloat f1, VFloat f2) -> return $ VBool $ f1 >= f2
+      (PlusOp  , VBool b1 , VBool b2 ) -> return $ VBool $ b1 `xor` b2
       (PlusOp  , VInt i1  , VInt i2  ) -> return $ VInt $ i1 + i2
       (PlusOp  , VFloat f1, VFloat f2) -> return $ VFloat $ f1 + f2
       (PlusOp  , VCmplx c1, VCmplx c2) -> return $ VCmplx $ c1 + c2
@@ -431,6 +432,7 @@ reduceExpr expr = case expr of
       (AndOp   , VPoly p1    , VPoly p2    ) -> return $ VPoly $ head (sAnd [p1] [p2])
       (OrOp    , VPoly p1    , VPoly p2    ) -> return $ VPoly $ head (sOr [p1] [p2])
       (XorOp   , VPoly p1    , VPoly p2    ) -> return $ VPoly $ head (sXor [p1] [p2])
+      (PlusOp  , VPoly p1    , VPoly p2    ) -> return $ VPoly $ head (sXor [p1] [p2])
       (PlusOp  , v1          , v2          ) -> do
         pl1 <- getPolyListOfValue v1
         pl2 <- getPolyListOfValue v2
@@ -973,7 +975,7 @@ bitVec' = map (fromInteger . toInteger) . List.unfoldr f
   where
     f n = if n == 0 then Nothing
       else
-        Just (n .&. 1, n .>>. 1)
+        Just (n .&. 1, n `shiftR` 1)
 
 stdlib = ["x", "y", "z", "h", "cx", "cy", "cz", "ch", "id", "s", "sdg", "t", "tdg", "rz", "rx", "ry", "ccx", "crz", "u3", "u2", "u1", "cu1", "cu3", "swap"]
 
