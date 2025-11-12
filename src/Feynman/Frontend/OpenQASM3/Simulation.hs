@@ -372,7 +372,10 @@ reduceExpr expr = case expr of
       (NegOp     , VPoly p    ) -> return $ VPoly $ head (sNot [p])
       (UMinusOp  , VPolyList l) -> return $ VPolyList $ sNeg l
       (PopcountOp, VPolyList l) -> return $ VPolyList $ sPopcount l
-      _  -> error "error in uop expr reduction"
+      (PopcountOp, v          ) -> do
+        pl <- getPolyListOfValue v
+        return $ VPolyList $ sPopcount $ fromJust pl
+      _  -> error $ "error in uop expr reduction: " ++ show uop ++ " " ++ show v
   EBOp t a bop b -> do
     v1 <- reduceExpr a
     v2 <- reduceExpr b
