@@ -16,7 +16,7 @@ import Data.Bits (Bits, testBit, xor, (.&.), shiftR)
 import Data.Complex ( Complex, imagPart, realPart )
 
 import qualified Feynman.Util.Unicode as U
-import GHC.Real (reduce)
+import GHC.Real (reduce, Integral (div))
 import Feynman.Frontend.OpenQASM3.Core (TypeExpr'(TCReg))
 import Feynman.Algebra.SArith (sPopcount, sAnd, sXor, sLShift, sLRot)
 import Control.Monad (forM)
@@ -100,7 +100,12 @@ getPolyListOfValue v = case v of
   VInt n      -> return $ Just $ makeSNat (toInteger n)
   VCReg i j   -> liftM Just $ mapM getOutPoly [i..i+j-1]
   VPolyList l -> return $ Just l
-  _ -> error $ show v
+  _ -> return Nothing
+
+getIntOfValue :: Value -> State Env (Maybe Int)
+getIntOfValue v = case v of
+  VInt n -> return $ Just n
+  _      -> return Nothing
 
 intOfValue :: Value -> Int
 intOfValue v = case v of
@@ -383,95 +388,121 @@ reduceExpr expr = case expr of
       (AndOp   , VBool b1 , VBool b2 ) -> return $ VBool $ b1 && b2
       (OrOp    , VBool b1 , VBool b2 ) -> return $ VBool $ b1 || b2
       (XorOp   , VBool b1 , VBool b2 ) -> return $ VBool $ b1 `xor` b2
---      (LShiftOp, _        , _        ) -> error "check: should work like rotl?"
---      (RShiftOp, _        , _        ) -> error "check: should work like rotr?"
       (EqOp    , VBool b1 , VBool b2 ) -> return $ VBool $ b1 == b2
-      (EqOp    , VInt i1  , VInt i2  ) -> return $ VBool $ i1 == i2
-      (EqOp    , VFloat f1, VFloat f2) -> return $ VBool $ f1 == f2
       (EqOp    , VCmplx c1, VCmplx c2) -> return $ VBool $ c1 == c2
---      (EqOp    , _        , _        ) -> error "constraint propagation? ex uint = int"
-      (LTOp    , VInt i1  , VInt i2  ) -> return $ VBool $ i1 < i2
-      (LTOp    , VFloat f1, VFloat f2) -> return $ VBool $ f1 < f2
-      (LEqOp   , VInt i1  , VInt i2  ) -> return $ VBool $ i1 <= i2
-      (LEqOp   , VFloat f1, VFloat f2) -> return $ VBool $ f1 <= f2
-      (GTOp    , VInt i1  , VInt i2  ) -> return $ VBool $ i1 > i2
-      (GTOp    , VFloat f1, VFloat f2) -> return $ VBool $ f1 > f2
-      (GEqOp   , VInt i1  , VInt i2  ) -> return $ VBool $ i1 >= i2
-      (GEqOp   , VFloat f1, VFloat f2) -> return $ VBool $ f1 >= f2
-      (PlusOp  , VBool b1 , VBool b2 ) -> return $ VBool $ b1 `xor` b2
-      (PlusOp  , VInt i1  , VInt i2  ) -> return $ VInt $ i1 + i2
-      (PlusOp  , VFloat f1, VFloat f2) -> return $ VFloat $ f1 + f2
       (PlusOp  , VCmplx c1, VCmplx c2) -> return $ VCmplx $ c1 + c2
-      (MinusOp , VInt i1  , VInt i2  ) -> return $ VInt $ i1 - i2
-      (MinusOp , VFloat f1, VFloat f2) -> return $ VFloat $ f1 - f2
       (MinusOp , VCmplx c1, VCmplx c2) -> return $ VCmplx $ c1 - c2
-      (TimesOp , VInt i1  , VInt i2  ) -> return $ VInt $ i1 * i2
-      (TimesOp , VFloat f1, VFloat f2) -> return $ VFloat $ f1 * f2
-      (TimesOp , VCmplx c1, VCmplx c2) -> return $ VCmplx $ c1 * c2 -- need to implement casting
-      (DivOp   , VInt i1  , VInt i2  ) -> return $ VInt $ i1 `quot` i2 -- div?
-      (DivOp   , VFloat f1, VFloat f2) -> return $ VFloat $ f1 / f2
+      (TimesOp , VCmplx c1, VCmplx c2) -> return $ VCmplx $ c1 * c2
       (DivOp   , VCmplx c1, VCmplx c2) -> return $ VCmplx $ c1 / c2
-      (ModOp   , VInt i1  , VInt i2  ) -> return $ VInt $ i1 `mod` i2
-      (PowOp   , VInt i1  , VInt i2  ) -> return $ VInt $ i1 ^ i2
-      (AndOp   , VPolyList l1, VPolyList l2) -> return $ VPolyList (sAnd l1 l2)
-      (OrOp    , VPolyList l1, VPolyList l2) -> return $ VPolyList (sOr l1 l2)
-      (XorOp   , VPolyList l1, VPolyList l2) -> return $ VPolyList (sXor l1 l2)
-      (LShiftOp, VPolyList l1, VPolyList l2) -> return $ VPolyList (sLShift l1 l2)
-      (RShiftOp, VPolyList l1, VPolyList l2) -> return $ VPolyList (sRShift l1 l2)
-      (LRotOp  , VPolyList l1, VPolyList l2) -> return $ VPolyList (sLRot l1 l2)
-      (RRotOp  , VPolyList l1, VPolyList l2) -> return $ VPolyList (sRRot l1 l2)
-      (PlusOp  , VPolyList l1, VPolyList l2) -> return $ VPolyList (sPlus l1 l2)
-      (MinusOp , VPolyList l1, VPolyList l2) -> return $ VPolyList (sMinus l1 l2)
-      (TimesOp , VPolyList l1, VPolyList l2) -> return $ VPolyList (sMult l1 l2)
-      (DivOp   , VPolyList l1, VPolyList l2) -> return $ VPolyList (sQuot l1 l2)
-      (ModOp   , VPolyList l1, VPolyList l2) -> return $ VPolyList (sMod l1 l2)
-      (PowOp   , VPolyList l1, VPolyList l2) -> return $ VPolyList (sPow l1 l2)
-      (EqOp    , VPolyList l1, VPolyList l2) -> return $ VPoly (sEq l1 l2)
-      (LTOp    , VPolyList l1, VPolyList l2) -> return $ VPoly (sLT l1 l2)
-      (LEqOp   , VPolyList l1, VPolyList l2) -> return $ VPoly (sLEq l1 l2)
-      (GTOp    , VPolyList l1, VPolyList l2) -> return $ VPoly (sGT l1 l2)
-      (GEqOp   , VPolyList l1, VPolyList l2) -> return $ VPoly (sGEq l1 l2)
-      (EqOp    , VPoly p1    , VPoly p2    ) -> return $ VPoly (sEq [p1] [p2])
-      (AndOp   , VPoly p1    , VPoly p2    ) -> return $ VPoly $ head (sAnd [p1] [p2])
-      (OrOp    , VPoly p1    , VPoly p2    ) -> return $ VPoly $ head (sOr [p1] [p2])
-      (XorOp   , VPoly p1    , VPoly p2    ) -> return $ VPoly $ head (sXor [p1] [p2])
-      (PlusOp  , VPoly p1    , VPoly p2    ) -> return $ VPoly $ head (sXor [p1] [p2])
-      (PlusOp  , v1          , v2          ) -> do
-        pl1 <- getPolyListOfValue v1
-        pl2 <- getPolyListOfValue v2
-        case (pl1, pl2) of
-          (Just pl1, Just pl2) -> return $ VPolyList (sPlus pl1 pl2)
-          _                    -> return $ VFloat (floatOfValue v1 + floatOfValue v2)
-      (EqOp    , v1          , v2          ) -> do
-        p1 <- getPolyOfValue v1
-        p2 <- getPolyOfValue v2
-        case (p1, p2) of
-          (Just p1, Just p2) -> return $ VPoly (sEq [p1] [p2])
-          _                  -> do
-            pl1 <- getPolyListOfValue v1
-            pl2 <- getPolyListOfValue v2
-            case (pl1, pl2) of
-              (Just pl1, Just pl2) -> return $ VPoly (sEq pl1 pl2)
-              _                    -> do
-                return $ VBool (floatOfValue v1 == floatOfValue v2)
-      (LEqOp   , v1          , v2          ) -> do
-        pl1 <- getPolyListOfValue v1
-        pl2 <- getPolyListOfValue v2
-        case (pl1, pl2) of
-          (Just pl1, Just pl2) -> return $ VPoly (sLEq pl1 pl2)
-          _                    -> do
-            return $ VBool (floatOfValue v1 <= floatOfValue v2)
-      (TimesOp, VPoly p1     , VPoly p2    ) -> return $ VPoly (p1 * p2)
-      (TimesOp, v1           , v2          ) -> return $ VFloat (floatOfValue v1 * floatOfValue v2)
-      (DivOp  , v1           , v2          ) -> return $ VFloat (floatOfValue v1 / floatOfValue v2)
-      _ -> error $ show v1 ++ " " ++ show bop ++ " " ++ show v2 ++ "  type: " ++ show t
+      (bop     , v1       , v2)        -> reduceBOP bop (v1, v2)
   ECall {} -> do
     v <- simExpr 1 expr
     case v of
       Just v  -> return v
       Nothing -> return VUnit
   _ -> error $ show expr
-      
+
+bopFns :: BinOp -> ( Maybe (SBool Var -> SBool Var -> Value)
+              , Maybe ([SBool Var] -> [SBool Var] -> Value)
+              , Maybe (Int -> Int -> Value)
+              , Maybe (Double -> Double -> Value) )
+bopFns bop = case bop of 
+  EqOp     -> ( Just (\s t -> VPoly $ sEq [s] [t])
+              , Just (\s t -> VPoly $ sEq s t)
+              , Just (\c d -> VBool $ c == d)
+              , Just (\c d -> VBool $ c == d) )
+  LTOp     -> ( Nothing
+              , Just (\s t -> VPoly $ sLT s t)
+              , Just (\c d -> VBool $ c < d)
+              , Just (\c d -> VBool $ c < d) )
+  LEqOp    -> ( Nothing 
+              , Just (\s t -> VPoly $ sLEq s t)
+              , Just (\c d -> VBool $ c <= d)
+              , Just (\c d -> VBool $ c <= d) )
+  GTOp     -> ( Nothing
+              , Just (\s t -> VPoly $ sGT s t)
+              , Just (\c d -> VBool $ c > d)
+              , Just (\c d -> VBool $ c > d) )
+  GEqOp    -> ( Nothing 
+              , Just (\s t -> VPoly $ sGEq s t)
+              , Just (\c d -> VBool $ c >= d)
+              , Just (\c d -> VBool $ c >= d) )
+  NEqOp    -> ( Just (\s t -> VPoly $ sNEq [s] [t])
+              , Just (\s t -> VPoly $ sNEq s t)
+              , Just (\c d -> VBool $ c /= d)
+              , Just (\c d -> VBool $ c /= d) )
+  PlusOp   -> ( Just (\s t -> VPoly $ head (sXor [s] [t]))
+              , Just (\s t -> VPolyList $ sPlus s t)
+              , Just (\c d -> VInt $ c + d)
+              , Just (\c d -> VFloat $ c + d) )
+  MinusOp  -> ( Nothing
+              , Just (\s t -> VPolyList $ sMinus s t)
+              , Just (\c d -> VInt $ c - d)
+              , Just (\c d -> VFloat $ c - d) )
+  TimesOp  -> ( Just (\s t -> VPoly $ head (sAnd [s] [t]))
+              , Just (\s t -> VPolyList $ sMult s t)
+              , Just (\c d -> VInt $ c * d)
+              , Just (\c d -> VFloat $ c * d) )
+  DivOp    -> ( Nothing
+              , Just (\s t -> VPolyList $ sQuot s t)
+              , Just (\c d -> VInt $ c `div` d)
+              , Just (\c d -> VFloat $ c / d) )
+  ModOp    -> ( Nothing
+              , Just (\s t -> VPolyList $ sMod s t)
+              , Just (\c d -> VInt $ c `mod` d)
+              , Nothing )
+  PowOp    -> ( Nothing
+              , Just (\s t -> VPolyList $ sPow s t)
+              , Just (\c d -> VInt $ c ^ d)
+              , Nothing )
+  OrOp     -> ( Just (\s t -> VPoly $ head (sOr [s] [t]))
+              , Just (\s t -> VPolyList $ sOr s t) 
+              , Nothing
+              , Nothing )
+  AndOp    -> ( Just (\s t -> VPoly $ head (sAnd [s] [t]))
+              , Just (\s t -> VPolyList $ sAnd s t) 
+              , Nothing
+              , Nothing )  
+  XorOp    -> ( Just (\s t -> VPoly $ head (sXor [s] [t]))
+              , Just (\s t -> VPolyList $ sXor s t) 
+              , Nothing
+              , Nothing )
+  LShiftOp -> ( Nothing
+              , Just (\s t -> VPolyList $ sLShift s t)
+              , Nothing
+              , Nothing )
+  RShiftOp -> ( Nothing
+              , Just (\s t -> VPolyList $ sRShift s t)
+              , Nothing
+              , Nothing )
+  LRotOp   -> ( Nothing
+              , Just (\s t -> VPolyList $ sLRot s t)
+              , Nothing
+              , Nothing )
+  RRotOp   -> ( Nothing
+              , Just (\s t -> VPolyList $ sRRot s t)
+              , Nothing
+              , Nothing )
+  
+reduceBOP :: BinOp -> (Value, Value) -> State Env Value
+reduceBOP bop (v1, v2) = do
+  let (f, g, h, k) = bopFns bop
+  i1 <- getIntOfValue v1
+  i2 <- getIntOfValue v2
+  case (i1, i2, h) of
+    (Just i1, Just i2, Just h) -> return $ h i1 i2
+    _ -> do
+      p1 <- getPolyOfValue v1
+      p2 <- getPolyOfValue v2
+      case (p1, p2, f) of
+        (Just p1, Just p2, Just f) -> return $ f p1 p2
+        _ -> do
+          pl1 <- getPolyListOfValue v1
+          pl2 <- getPolyListOfValue v2
+          case (pl1, pl2, g) of
+            (Just pl1, Just pl2, Just g) -> return $ g pl1 pl2
+            _ -> return $ (fromJust k) (floatOfValue v1) (floatOfValue v2)
+
 simStmt :: SBool Var -> Stmt ElaboratedType -> State Env (Maybe Value)
 simStmt p stmt = case stmt of
   SSkip _                    -> return Nothing
@@ -536,7 +567,8 @@ verifyDef' pre post refs bindings body = do
   modify $ \env -> env'
   where
     checkPost ps ps' =
-      if grind ps ~~= grind ps' then
+      let b = {-# SCC "gogogo" #-} grind ps ~~= grind ps' in 
+      if b then
         Trace.trace ("verification success: " ++ show (grind ps')) (return ())
       else
         error $ "verification failed: " ++ show (grind ps) ++ " " ++ show (grind ps')

@@ -247,6 +247,9 @@ sEq s t
   where
     iff p q = 1 + p + q
 
+sNEq :: MVar v => SUInt v -> SUInt v -> SBool v
+sNEq s t = 1 + sEq s t
+
 {---------------------------
  Testing
  ----------------------------}
