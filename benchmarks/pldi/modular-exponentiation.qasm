@@ -104,23 +104,8 @@ def sub_cuccaro_carry_only(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
     inv @ uma A[0], B[0], X;
 }
 
-@pre A       ~>  |r  :uint[n]> 
-  , B        ~>  |s  :uint[n]> 
-  , CONST_N  ~>  |N  :uint> 
-  , CONST_TN ~>  |TN :uint> 
-  , anc      ~>  |0>
-  , f_1      ~>  |0>
-  , f_2      ~>  |0>
-  , 0 <= N   ,  N<(1<<n) 
-  , 0 <= TN  ,  TN<(1<<n)
-  , N+TN     ~>  (1<<n)
-@post A       ~>  |r> 
-  , B        ~>  |int(r)+int(s)%N> 
-  , CONST_N  ~>  |N> 
-  , CONST_TN ~>  |TN> 
-  , anc      ~>  |0>
-  , f_1      ~>  |0>
-  , f_2      ~>  |0>
+@pre A       ~>  |r  :uint[n]> , B        ~>  |s  :uint[n]> , CONST_N  ~>  |N  :uint> , CONST_TN ~>  |TN :uint> , anc      ~>  |0>, f_1      ~>  |0>, f_2      ~>  |0>, 0 <= N   ,  N<(1<<n) , 0 <= TN  ,  TN<(1<<n), N+TN     ~>  (1<<n)
+@post A       ~>  |r> , B        ~>  |int(r)+int(s)%N> , CONST_N  ~>  |N> , CONST_TN ~>  |TN> , anc      ~>  |0>, f_1      ~>  |0>, f_2      ~>  |0>
 def add_mod_N_in_place(
   qubit[n] A,         //=|r>
   qubit[n] B,         //=|s>
@@ -139,27 +124,8 @@ def add_mod_N_in_place(
   sub_cuccaro_carry_only(A,B,anc,f_2);
 }
 
-@pre c        ~>  |c> 
-  , X        ~>  |xval  :uint[n]>
-  , Y        ~>  |yval  :uint[n]> 
-  , CONST_N  ~>  |N  :uint> 
-  , CONST_TN ~>  |TN :uint> 
-  , A        ~>  |0  :uint[n]>
-  , anc      ~>  |0>
-  , f_1      ~>  |0>
-  , f_2      ~>  |0>
-  , 0 < N    ,  N<(1<<n) 
-  , 0 < TN   ,  TN<(1<<n)
-  , N+TN     ~>  1<<n
-@post c       ~>  |c> 
-  , X        ~>  |xval>
-  , Y        ~>  |(yval+c*a*xval)%N> 
-  , CONST_N  ~>  |N> 
-  , CONST_TN ~>  |TN> 
-  , A        ~>  |0>
-  , anc      ~>  |0>
-  , f_1      ~>  |0>
-  , f_2      ~>  |0>
+@pre c        ~>  |c> , X        ~>  |xval  :uint[n]>, Y        ~>  |yval  :uint[n]> , CONST_N  ~>  |N  :uint> , CONST_TN ~>  |TN :uint> , A        ~>  |0  :uint[n]>, anc      ~>  |0> , f_1      ~>  |0> , f_2      ~>  |0> , 0 < N    ,  N<(1<<n) , 0 < TN   ,  TN<(1<<n), N+TN     ~>  1<<n
+@post c       ~>  |c> , X        ~>  |xval>, Y        ~>  |(yval+c*a*xval)%N> , CONST_N  ~>  |N> , CONST_TN ~>  |TN> , A        ~>  |0>, anc      ~>  |0>, f_1      ~>  |0>, f_2      ~>  |0>
 def ctrl_mul_mod_N_oo_place(
   uint[n] a,          // shadows global const uint[n] a
   qubit c,
@@ -176,14 +142,14 @@ def ctrl_mul_mod_N_oo_place(
   uint t  = uint(a) % N;        // t = a mod N initially.
   for uint i in [0:n-1]{        // For each control bit X[i], conditionally add constant t to Y (mod N).
     for uint j in [0:n-1] {     // If c~>1, load A := X[i] * t (mask-and-add pattern).
-      if ( ((t >> j) , 1) ==  1 ) {
+      if ( ((t >> j) & 1) ==  1 ) {
         ccx c, X[i], A[j];      // Single-control load of the j-th bit of t into A[j] if X[i]=1
       }
     }
                                 //  Unconditional modular add: Y <- Y + A (mod N)
     add_mod_N_in_place(A, Y, CONST_N, CONST_TN, anc, f_1, f_2);
     for uint j in [0:n-1] {     //  Uncompute A register.
-      if ( ((t >> j) , 1) ==  1 ) {
+      if ( ((t >> j) & 1) ==  1 ) {
         ccx c, X[i], A[j];      // Single-control load of the j-th bit of t into A[j] if X[i]=1
       }
     }
@@ -199,27 +165,8 @@ def mod_inv(uint a)-> uint{     // As a,N are coprime, the existence of an inver
   return 0;
 }
 
-@pre c        ~>  |c> 
-  , X        ~>  |xval  :uint[n]>
-  , CONST_N  ~>  |N  :uint> 
-  , CONST_TN ~>  |TN :uint> 
-  , Y        ~>  |0  :uint[n]> 
-  , A        ~>  |0  :uint[n]>
-  , anc      ~>  |0>
-  , f_1      ~>  |0>
-  , f_2      ~>  |0>
-  , 0 < N   ,  N   < (1<<n) 
-  , 0 < TN  ,  TN  < (1<<n)
-  , N+TN     ~>  1<<n
-@post c       ~>  |(c*a*xval)%N> 
-  , X        ~>  |xval>
-  , CONST_N  ~>  |N> 
-  , CONST_TN ~>  |TN> 
-  , Y        ~>  |0> 
-  , A        ~>  |0>
-  , anc      ~>  |0>
-  , f_1      ~>  |0>
-  , f_2      ~>  |0>
+@pre c        ~>  |c> , X        ~>  |xval  :uint[n]>, CONST_N  ~>  |N  :uint> , CONST_TN ~>  |TN :uint> , Y        ~>  |0  :uint[n]> , A        ~>  |0  :uint[n]>, anc      ~>  |0>, f_1      ~>  |0>, f_2      ~>  |0>, 0 < N   ,  N   < (1<<n) , 0 < TN  ,  TN  < (1<<n), N+TN     ~>  1<<n
+@post c       ~>  |(c*a*xval)%N> , X        ~>  |xval>, CONST_N  ~>  |N> , CONST_TN ~>  |TN> , Y        ~>  |0> , A        ~>  |0>, anc      ~>  |0>, f_1      ~>  |0>, f_2      ~>  |0>
 def ctrl_mul_mod_N_in_place(
   uint[n] a,          
   qubit c,            
@@ -244,22 +191,9 @@ def ctrl_mul_mod_N_in_place(
   ctrl_mul_mod_N_oo_place((N - ainv) % N, c, X, Y, CONST_N, CONST_TN, A, anc, f_1, f_2);
 }
 
-@pre control      ~>  |j: uint[csize]> 
-  , target       ~>  |1: uint[n]>
-  , CONST_N      ~>  |0: uint[n]>
-  , CONST_TN     ~>  |0: uint[n]>
-  , anc_1        ~>  |0>
-  , anc_2        ~>  |0>
-  , anc_3        ~>  |0>
-  , 0 < N        ,  N  <  (1<<n) 
-@post 
-  (control,target)~>  |j>
-  , CONST_N      ~>  |(a^j) % N>
-  , CONST_TN     ~>  |0>
-  , anc_1        ~>  |0>
-  , anc_2        ~>  |0>
-  , anc_3        ~>  |0>
-def modular-exponentiation(
+@pre control      ~>  |j: uint[csize]> , target       ~>  |1: uint[n]>, CONST_N      ~>  |0: uint[n]>, CONST_TN     ~>  |0: uint[n]>, anc_1        ~>  |0>, anc_2        ~>  |0>, anc_3        ~>  |0>, 0 < N        ,  N  <  (1<<n) 
+@post control~>  |j>, target      ~>  |(a^j) % N>, CONST_N     ~>  |0>,  CONST_TN     ~>  |0>, anc_1        ~>  |0>, anc_2        ~>  |0>, anc_3        ~>  |0>
+def modular_exponentiation(
     uint csize,
     uint[n] a, 
     uint N,
@@ -273,14 +207,14 @@ def modular-exponentiation(
   ){
   uint TN = (1<<n) - N;     // =2^n - N
   for uint i in [0:n-1] {   // Initialize “constant registers”.
-    if (((int(N)  >> i) , 1) == 1) { x CONST_N[i]; }
-    if (((int(TN) >> i) , 1) == 1) { x CONST_TN[i]; }
+    if (((int(N)  >> i) & 1) == 1) { x CONST_N[i]; }
+    if (((int(TN) >> i) & 1) == 1) { x CONST_TN[i]; }
   }
   for uint i in [0:csize-1] {
     ctrl_mul_mod_N_in_place (a*(1<<i), control[i], target, CONST_N, CONST_TN, anc_reg_1, anc_reg_2,anc_1, anc_2,anc_3 );
   }
   for uint i in [0:n-1] {    // Reset “constant registers”.
-    if (((int(N)  >> i) , 1) == 1) { x CONST_N[i]; }
-    if (((int(TN) >> i) , 1) == 1) { x CONST_TN[i]; }
+    if (((int(N)  >> i) & 1) == 1) { x CONST_N[i]; }
+    if (((int(TN) >> i) & 1) == 1) { x CONST_TN[i]; }
   }
 }

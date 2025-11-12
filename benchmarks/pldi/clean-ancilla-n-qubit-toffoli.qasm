@@ -2,11 +2,12 @@ include "stdgates.inc";
 
 const uint n = 9;
 
-def AND(bit[n] reg)->bit{
+def AND(bit[n] reg)->bit {
     bit out=1;
     for int i in [0:n-1] { out = out * reg[i]; }
-    return out
+    return out;
 }
+
 @pre    c   ~> |cval:bit[n]>  ,  t   ~> |tval:bit>          ,  anc ~> |0>
 @post   c   ~> |cval>      ,     t   ~> |tval+AND(cval)>    ,  anc ~> |0>
 def clean_ancilla_n_qubit_toffoli (qubit[n] c, qubit t, qubit anc) {
