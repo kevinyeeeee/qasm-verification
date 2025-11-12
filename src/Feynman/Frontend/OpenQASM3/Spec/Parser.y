@@ -126,7 +126,7 @@ expr3 : int                  { ILit $1 }
       | id                   { Var $1 Nothing }
       | id '[' expr ']'      { Var $1 (Just $3) }
       | id ':' type          { VarDec $1 $3 }
-      | '(' expr ')'         { $2 }
+      | '(' pred ')'         { $2 }
       | '~' expr3            { UExp Neg $2 }
       | '-' expr3            { UExp Neg $2 }
       | unary '(' expr ')'   { UExp $1 $3 }
