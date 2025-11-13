@@ -1,5 +1,7 @@
 include "stdgates.inc";
 
+@pre  a ~> |A:bit>, b ~> |B:bit>, c ~> |C:bit>, anc ~> |0>
+@post a ~> |A>,     b ~> exp(-(A*B)/2)|B>,     c ~> |C+A*B>, anc ~> |0>
 gate cj_tof_star a, b, c, anc {
     h c;
     cx a, anc;

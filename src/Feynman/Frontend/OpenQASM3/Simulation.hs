@@ -633,9 +633,11 @@ simAnnotated p annots stmt = case stmt of
       Just sum -> Trace.trace ("verification success: " ++ id) $ addSummary id sum >> return Nothing
       Nothing -> Trace.trace ("verification failed: " ++ id) $ return Nothing
   SDeclare _ decl@(DGate id [] qargs body) -> do
-    verifyDef pre post refs (zip qargs (repeat TQBit)) body
+    sum <- verifyDef pre post refs (zip qargs (repeat TQBit)) body
     simDeclare decl
-    return Nothing
+    case sum of
+      Just sum -> Trace.trace ("verification success: " ++ id) $ return Nothing
+      Nothing -> Trace.trace ("verification failed: " ++ id) $ return Nothing
   SDeclare _ decl@(DGate _ cparams _ _  ) ->
     error "cannot verify gate with angles parameters"
   _               -> simStmt p stmt
@@ -701,7 +703,7 @@ verifyDef' pre post refs bindings body = do
       TBool   -> liftM (\a -> Pathsum 0 0 1 0 0 [a]) (exprToSBV expr)
       TCReg n -> liftM (\y -> Pathsum 0 0 n 0 0 (setWidth y n)) (exprToSBVList expr)
       TUInt (Just n) -> liftM (\y -> Pathsum 0 0 n 0 0 (setWidth y n)) (exprToSBVList expr)
-      TInt  (Just n) -> liftM (\y -> Pathsum 0 0 n 0 0 (setWidth y n)) (exprToSBVList expr)
+      TInt  _ -> liftM ket (exprToBoolPolyList expr)
       e -> error $ show expr
 
     applyPre = do 
@@ -1060,11 +1062,7 @@ simDeclare decl = case decl of
         case v of
           VBool False -> declareSymbolic vid TBool (Just [0])
           VBool True  -> declareSymbolic vid TBool (Just [1])
-          v           -> do
-            p <- getPolyOfValue v
-            case p of
-              Just p -> declareWithPS vid TBool (Pathsum 0 0 1 0 0 [p])
-
+          v           -> bindVar vid (Scalar TBool v)
     TCReg n -> do
       n' <- reduceExpr n
       case n' of
