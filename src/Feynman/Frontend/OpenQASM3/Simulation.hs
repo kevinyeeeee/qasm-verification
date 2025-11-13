@@ -22,6 +22,9 @@ import Feynman.Algebra.SArith (sPopcount, sAnd, sXor, sLShift, sLRot)
 import Control.Monad (forM)
 
 import qualified Debug.Trace as Trace
+import GHC.IO (unsafePerformIO)
+import System.CPUTime
+import Feynman.Timing (addSimulationTime, addCheckingTime)
 
 isPowerOfTwo :: (Bits i, Integral i) => i -> Bool
 isPowerOfTwo n = n > 0 && (n .&. (n - 1)) == 0
@@ -525,19 +528,21 @@ verifyDef pre post refs binds body = do
 
 verifyDef' :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [Expr ElaboratedType] -> [(ID, Type)] -> Stmt ElaboratedType -> State Env ()
 verifyDef' pre post refs bindings body = do
-  env' <- get
+  let start = unsafePerformIO (do { v <- getCPUTime; putStr ""; return v })
+  env' <- start `seq` get
   modify $ \env -> (initEnv True) { globals = globals env }
   do { applyPre; mapM applyRefinement refs; simStmt 1 body }
-  prePS <- traceExcept outPaths
+  prePS <- start `seq` traceExcept outPaths
   modify $ \env -> env { pathsum = mempty, qwidth = 0, binds = Map.empty : binds env }
   (do { applyPost; mapM applyRefinement refs })
   postPS <- discardExcept outPaths
-  checkPost prePS postPS
-  modify $ \env -> env'
+  end <- checkPost start prePS postPS
+  end `seq` modify $ \env -> env'
   where
-    checkPost ps ps' =
-      if grind ps ~~= grind ps' then
-        Trace.trace ("verification success: " ++ show (grind ps')) (return ())
+    checkPost start ps ps' =
+      let middle = unsafePerformIO (do putStr ""; getCPUTime) in
+      if middle `seq` (grind ps ~~= grind ps') then
+        Trace.trace ("verification success: " ++ show (grind ps')) (return (unsafePerformIO (do {end <- getCPUTime; addCheckingTime middle end; addSimulationTime start middle })))
       else
         error $ "verification failed: " ++ show (grind ps) ++ " " ++ show (grind ps')
 
