@@ -737,9 +737,9 @@ translateAnnotations nodes = case nodes of
     translateAssertions c = foldl (go c) ([], [])
     go c (as, rs) (Spec.Pointsto lvl e) =
       let (e', ref) = Spec.collectRefinements e in
-        ((accessPathFromSpec c lvl, exprFromSpec c e') : as, maybe rs (\x -> exprFromSpec c x : rs) ref)
+        (as ++ [(accessPathFromSpec c lvl, exprFromSpec c e')], maybe rs (\x -> rs ++ [exprFromSpec c x]) ref)
     go c (as, rs) (Spec.Discard e)       = (as, rs)
-    go c (as, rs) (Spec.Pure e)          = (as , exprFromSpec c e : rs)
+    go c (as, rs) (Spec.Pure e)          = (as , rs ++ [exprFromSpec c e])
 
 -- | Translation of Annotations
 translateAnnotation :: S.ParseNode -> Either ErrMsg (Annotation S.SourceRef)

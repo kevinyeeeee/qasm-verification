@@ -379,6 +379,12 @@ reduceExpr expr = case expr of
       (MinusOp , VCmplx c1, VCmplx c2) -> return $ VCmplx $ c1 - c2
       (TimesOp , VCmplx c1, VCmplx c2) -> return $ VCmplx $ c1 * c2
       (DivOp   , VCmplx c1, VCmplx c2) -> return $ VCmplx $ c1 / c2
+      (TimesOp , v1       , v2       ) -> do
+        p <- getPolyOfValue v1
+        pl <- getPolyListOfValue v2
+        case (p, pl) of
+          _ -> reduceBOP TimesOp (v1, v2)
+
       (bop     , v1       , v2)        -> reduceBOP bop (v1, v2)
   ECall {} -> do
     v <- simExpr 1 expr
@@ -1021,6 +1027,7 @@ simDeclare decl = case decl of
         case v of
           VBool False -> declareSymbolic vid TBool (Just [0])
           VBool True  -> declareSymbolic vid TBool (Just [1])
+          v           -> bindVar vid (Scalar TBool v)
     TCReg n -> do
       n' <- reduceExpr n
       case n' of
