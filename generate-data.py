@@ -96,7 +96,7 @@ def gather_datum(prog_call, path, base, additional_flags, timeout):
     print(prog_call + BASE_FLAGS + flags + [join(path, base + TEST_EXT)])
     process_output = EasyProcess(prog_call + BASE_FLAGS + flags + [join(path, base + TEST_EXT)]).call(timeout=timeout+5)
     end = time.time()
-    return ((end - start), process_output.stdout,process_output.stderr)
+    return ((end - start)*1000, process_output.stdout,process_output.stderr)
 
 def gather_data(path, base, name):
     current_data = {"Test":name}
@@ -115,7 +115,7 @@ def gather_data(path, base, name):
                 print(err)
                 error = True
                 break
-            if time >= TIMEOUT_TIME:
+            if time >= TIMEOUT_TIME*1000:
                 timeout = True
                 break
             if datum == "":
@@ -166,7 +166,7 @@ def gather_data(path, base, name):
         averages = [average(col) for col in cols]
         return averages
 
-    gather_col([],ctime_combiner,["ComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
+    gather_col([],ctime_combiner,["SimulationTime","CheckingTime","ComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
 
     return current_data
 
