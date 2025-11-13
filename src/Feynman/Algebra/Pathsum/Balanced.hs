@@ -692,7 +692,7 @@ sumover = flip (foldl' go)
                   phasePoly = subst (FVar x) (ofVar v) (phasePoly sop),
                   outVals = map (subst (FVar x) (ofVar v)) (outVals sop) }
 
--- | Close a path sum by suming ovewr all free variables
+-- | Close a path sum by suming over all free variables
 sumAll :: (Eq g, Abelian g) => Pathsum g -> Pathsum g
 sumAll sop = sumover (freeVars sop) sop
 

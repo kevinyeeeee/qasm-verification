@@ -162,7 +162,7 @@ sNeg s = sPlus (makeSUInt 1 n) (sNot s) where n = getWidth s
 
 -- | Subtraction mod 2^n
 sMinus :: MVar v => SUInt v -> SUInt v -> SUInt v
-sMinus s t = sPlus s (sNeg t)
+sMinus s t = sPlus s (sNeg (setWidth t (getWidth s)))
 
 -- | Multiplication mod 2^n
 sMult :: MVar v => SUInt v -> SUInt v -> SUInt v
