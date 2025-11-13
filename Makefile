@@ -15,10 +15,10 @@ feynver:
 	cp dist/build/feynver/feynver ./feynver
 
 generate-data:
-	cabal build tcqasm && python3 generate-data.py benchmarks/pldi/
+	cabal build tcqasm && python3 generate-data.py benchmarks/pldi/ benchmarks/pldi-qft-increasing/
 
 regenerate-data:
-	rm -rf generated-data/* && cabal build tcqasm && python3 generate-data.py benchmarks/pldi/
+	rm -rf generated-data/* && cabal build tcqasm && python3 generate-data.py benchmarks/pldi/ benchmarks/pldi-qft-increasing/
 
 clean-data:
 	rm -rf generated-data/*
