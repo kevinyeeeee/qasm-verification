@@ -873,10 +873,8 @@ simFor p (id, typExpr) expr stmt = do
       where
         iter (Just r) _ = return $ Just r
         iter Nothing  e = do
-          pushEmptyEnv
           bindParam ((id, ty), e)
           ret <- simStmt p stmt
-          popEnv
           return ret 
 
 listOpOfBOp :: BinOp -> [SBool Var] -> [SBool Var] -> [SBool Var]
