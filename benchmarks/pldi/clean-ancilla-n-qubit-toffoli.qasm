@@ -8,9 +8,9 @@ def AND(bit[n] reg)->bit {
     return out;
 }
 
-@pre    c   ~> |cval:bit[n]>  ,  t   ~> |tval:bit>          ,  anc ~> |0>
-@post   c   ~> |cval>      ,     t   ~> |tval+AND(cval)>    ,  anc ~> |0>
-def clean_ancilla_n_qubit_toffoli (qubit[n] c, qubit t, qubit anc) {
+@pre    c   ~> |cval:bit[n]>  ,  target   ~> |tval:bit>          ,  anc ~> |0>
+@post   c   ~> |cval>      ,     target   ~> |tval+AND(cval)>    ,  anc ~> |0>
+def clean_ancilla_n_qubit_toffoli (qubit[n] c, qubit target, qubit anc) {
     //Step-1
     ccx c[0], c[1], anc;
     for uint i in [1:n/2-1] { ccx c[2*i+1], c[2*i], c[2*i-1]; }
@@ -19,9 +19,10 @@ def clean_ancilla_n_qubit_toffoli (qubit[n] c, qubit t, qubit anc) {
     ccx c[n-1], c[n-4], c[n-5];
     for uint i in [3:n/2] { ccx c[n-2*i+1], c[n-2*i], c[n-2*i-1]; }
     //Step-3
-    ccx anc, c[0], t;
+    ccx anc, c[0], target;
     //Step-4
     for uint i in [0:n/2-3] { ccx c[2*i+2], c[2*i+1], c[2*i]; }
+    ccx c[n-1], c[n-4], c[n-5];
     for uint i in [0:n-4]   { x c[i]; }
     for uint i in [1:n/2-1] { ccx c[n-2*i], c[n-2*i-1], c[n-2*i-2]; }
     ccx c[0], c[1], anc;

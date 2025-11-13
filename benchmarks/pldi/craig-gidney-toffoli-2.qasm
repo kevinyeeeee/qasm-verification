@@ -1,6 +1,6 @@
 include "stdgates.inc";
 
-@pre    a   ~> |q:bit> ,  b   ~> |r:bit> ,    c   ~> |p:bit>, p == q*r
+@pre    a   ~> |q:bit> ,  b   ~> |r:bit> ,    c   ~> |q*r>
 @post   a   ~> |q> ,      b   ~> |r> ,        c   ~> |0>
 def cg_tof_2 (qubit a, qubit b, qubit c) {
     bit meas = measure c;
