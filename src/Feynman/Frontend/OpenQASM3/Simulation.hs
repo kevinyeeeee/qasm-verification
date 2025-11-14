@@ -710,7 +710,7 @@ verifyDef' pre post refs bindings body = do
 
     z' path expr = case typeof path of
       TQBit   -> liftM (\x -> (x <> conjugate (renameKet x), [])) $ simKet (Just 1) expr
-      TQReg n -> liftM (\x -> (x <> conjugate (renameKet x), [])) $ simKet (Just n) expr
+      TQReg n -> liftM (\x -> (x <> conjugate (renameKet x), [])) $ simKet (Just (fromInteger n)) expr
       TBool   -> do
         p <- exprToSBV expr
         return $ (Pathsum 0 0 1 0 0 [p], [p])
