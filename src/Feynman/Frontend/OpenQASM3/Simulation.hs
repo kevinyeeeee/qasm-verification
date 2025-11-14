@@ -36,24 +36,24 @@ data Env = Env {
 } deriving (Show)
 
 data Binding =
-    Symbolic { typ :: Type, offset :: Int }
+    Symbolic { typ :: Type, offset :: Integer }
   | Scalar { typ :: Type, value :: Value }
   | Block { typ :: Type, params :: [(ID, Type)], returns :: Maybe Type, body :: Stmt ElaboratedType, summary :: Maybe (Pathsum DMod2) }
   | Gate { typ :: Type, gparams :: [ID], gargs :: [ID], body :: Stmt ElaboratedType }
   deriving (Show)
 
 data Value =
-    VInt Int
+    VInt Integer
   | VPi
   | VIm
   | VBool Bool
   | VList [Value]
   | VFloat Double
   | VCmplx (Complex Double)
-  | VQBit Int
-  | VQReg Int Int -- offset, size
-  | VCBit Int
-  | VCReg Int Int
+  | VQBit Integer
+  | VQReg Integer Integer -- offset, size
+  | VCBit Integer
+  | VCReg Integer Integer
   | VPoly (SBool Var)
   | VPolyList [SBool Var]
   | VUnit
@@ -74,19 +74,19 @@ castValue (EType ty _ _) val = case (ty, val) of
 
 offsetOfVal :: Value -> Int
 offsetOfVal v = case v of
-  VQBit n -> n
+  VQBit n -> fromInteger n
   _ -> error "no offset"
 
 getQVarOffsets :: Value -> State Env (Maybe [Int])
 getQVarOffsets v = case v of
-  VQBit i   -> return $ Just [i]
-  VQReg i j -> return $ Just [i..i+j-1]
+  VQBit i   -> return $ Just [fromInteger i]
+  VQReg i j -> return $ Just [fromInteger i..fromInteger i+fromInteger j-1]
   _         -> return Nothing
 
 getCVarOffsets :: Value -> State Env (Maybe [Int])
 getCVarOffsets v = case v of
-  VCBit i   -> getCOffset >>= (\o -> return $ Just [i+o])
-  VCReg i j -> getCOffset >>= (\o -> return $ Just [i+o..i+o+j-1])
+  VCBit i   -> getCOffset >>= (\o -> return $ Just [fromInteger i+o])
+  VCReg i j -> getCOffset >>= (\o -> return $ Just [fromInteger i+o..fromInteger i+o+fromInteger j-1])
   _         -> return Nothing
 
 floatOfValue :: Value -> Maybe Double
@@ -103,7 +103,7 @@ getPolyOfValue v = case v of
   VBool True  -> return $ Just 1
   VBool False -> return $ Just 0
   VPoly p     -> return $ Just p
-  VCBit j     -> liftM Just $ getOutPoly j
+  VCBit j     -> liftM Just $ getOutPoly (fromInteger j)
   VInt  1     -> return $ Just 1
   VInt  0     -> return $ Just 0
   _ -> return Nothing
@@ -111,16 +111,16 @@ getPolyOfValue v = case v of
 getPolyListOfValue :: Value -> State Env (Maybe [SBool Var])
 getPolyListOfValue v = case v of
   VInt n      -> return $ Just $ makeSNat (toInteger n)
-  VCReg i j   -> liftM Just $ mapM getOutPoly [i..i+j-1]
+  VCReg i j   -> liftM Just $ mapM getOutPoly [fromInteger i..fromInteger i+fromInteger j-1]
   VPolyList l -> return $ Just l
   _ -> return Nothing
 
-getIntOfValue :: Value -> State Env (Maybe Int)
+getIntOfValue :: Value -> State Env (Maybe Integer)
 getIntOfValue v = case v of
   VInt n -> return $ Just n
   _      -> return Nothing
 
-intOfValue :: Value -> Int
+intOfValue :: Value -> Integer
 intOfValue v = case v of
   VInt i -> i
 
@@ -191,9 +191,9 @@ offsetListOfPath path = do
       case bind of
         Nothing -> error "bind not found"
         Just b  -> case b of
-          Symbolic (TQReg n) offset -> return [offset..offset+n-1]
-          Symbolic TQBit     offset -> return [ offset ]
-          Symbolic (TCReg n) offset -> return $ map (+cOffset) [offset.. offset+n-1]
+          Symbolic (TQReg n) offset -> return [(fromInteger offset)..(fromInteger offset+fromInteger n-1)]
+          Symbolic TQBit     offset -> return [ fromInteger offset ]
+          Symbolic (TCReg n) offset -> return $ map (+cOffset) [fromInteger offset.. fromInteger offset+fromInteger n - 1]
     AIndex _ vid e -> do
       e' <- reduceExpr e
       case e' of
@@ -201,14 +201,14 @@ offsetListOfPath path = do
           bind <- searchBinding vid
           case bind of
             Just b -> case b of
-              Symbolic (TQReg n) offset -> return [offset + i]
+              Symbolic (TQReg n) offset -> return [fromInteger offset + fromInteger i]
             Nothing -> error "binding not found"
         _      -> error "index by non-int" 
     AList _ as -> liftM concat $ mapM offsetListOfPath as
 
 -- | Gives the unicode representation of the ith offset of v
-varOfOffset :: ID -> Int -> String
-varOfOffset v i = U.sub v (fromIntegral i)
+varOfOffset :: ID -> Integer -> String
+varOfOffset v i = U.sub v i
 
 searchBinding :: ID -> State Env (Maybe Binding)
 searchBinding id = do
@@ -249,11 +249,11 @@ renameKet :: Pathsum DMod2 -> Pathsum DMod2
 renameKet ps@(Pathsum _ _ _ _ p o) =
   ps { phasePoly = (rename renameFVar) p , outVals = map (rename renameFVar) o }
 
-allocateQType :: ID -> Pathsum DMod2 -> State Env Int
+allocateQType :: ID -> Pathsum DMod2 -> State Env Integer
 allocateQType v qbits = do
   offset <- getQWidth
   modify $ allocateQ
-  return $ offset 
+  return $ toInteger offset 
   where
     qbits' = renameKet qbits
     size   = outDeg qbits
@@ -264,11 +264,11 @@ allocateQType v qbits = do
         embedded = embed newOuts psSize (\i -> i) (\i -> if i < size then i + w else i + 2*w)
         newPs    = ps .> embedded
 
-allocateCType :: ID -> Pathsum DMod2 -> State Env Int
+allocateCType :: ID -> Pathsum DMod2 -> State Env Integer
 allocateCType v bits = do
   offset <- getCWidth
   modify $ allocateC
-  return $ offset 
+  return $ (toInteger offset)
   where
     allocateC env@(Env ps _ _ density w) = env { pathsum = newPs }
       where
@@ -322,12 +322,12 @@ reduceExpr expr = case expr of
     v <- reduceExpr e
     case v of
       VQBit i      -> do
-        modify $ measurePS i
-        gets $ \env -> VPoly . (!! i) . outVals $ pathsum env
+        modify $ measurePS $ fromInteger i
+        gets $ \env -> VPoly . (!! fromInteger i) . outVals $ pathsum env
       VQReg i size -> liftM VPolyList $
         forM [i..i+size-1] ( \j -> do
-          modify $ measurePS j
-          gets $ \env -> (!! j) . outVals $ pathsum env )
+          modify $ measurePS $ fromInteger j
+          gets $ \env -> (!! fromInteger j) . outVals $ pathsum env )
   EVar _ vid   -> do
     bind <- searchBinding vid
     env <- get
@@ -357,10 +357,10 @@ reduceExpr expr = case expr of
     x' <- reduceExpr x
     i' <- reduceExpr i
     case (x', i') of
-      (VPolyList l      , VInt i) -> return $ VPoly (l !! i)
-      (VQReg offset size, VInt i) -> if i < size then return $ VQBit (offset + i) else error "index out of range"
-      (VCReg offset size, VInt i) -> if i < size then return $ VCBit (offset + i) else error "index out of range"
-      (VList l          , VInt i) -> return $ l !! i
+      (VPolyList l      , VInt i) -> return $ VPoly (l !! (fromInteger i))
+      (VQReg offset size, VInt i) -> if i < toInteger size then return $ VQBit (offset + i) else error "index out of range"
+      (VCReg offset size, VInt i) -> if i < toInteger size then return $ VCBit (offset + i) else error "index out of range"
+      (VList l          , VInt i) -> return $ l !! (fromInteger i)
       _                       -> error "non indexable expression"
   ESet _ l    -> do
     set <- mapM reduceExpr l
@@ -415,7 +415,7 @@ reduceExpr expr = case expr of
 
 uopFns :: UOp -> ( Maybe (SBool Var -> Value)
                  , Maybe ([SBool Var] -> Value)
-                 , Maybe (Int -> Value)
+                 , Maybe (Integer -> Value)
                  , Maybe (Double -> Value))
 uopFns uop = case uop of
   SinOp      -> ( Nothing
@@ -472,12 +472,12 @@ uopFns uop = case uop of
                 , Just $ \f -> VFloat (-f) )
   PopcountOp -> ( Nothing
                 , Just $ \t -> VPolyList $ sPopcount t
-                , Just $ \i -> VInt $ popCount i
+                , Just $ \i -> VInt $ toInteger (popCount (fromInteger i :: Int))
                 , Nothing )
 
 bopFns :: BinOp -> ( Maybe (SBool Var -> SBool Var -> Value)
                    , Maybe ([SBool Var] -> [SBool Var] -> Value)
-                   , Maybe (Int -> Int -> Value)
+                   , Maybe (Integer -> Integer -> Value)
                    , Maybe (Double -> Double -> Value) )
 bopFns bop = case bop of 
   EqOp     -> ( Just $ \s t -> VPoly $ sEq [s] [t]
@@ -701,8 +701,8 @@ verifyDef' pre post refs bindings body = do
       TQBit   -> liftM (\x -> x <> conjugate (renameKet x)) $ simKet expr
       TQReg _ -> liftM (\x -> x <> conjugate (renameKet x)) $ simKet expr
       TBool   -> liftM (\a -> Pathsum 0 0 1 0 0 [a]) (exprToSBV expr)
-      TCReg n -> liftM (\y -> Pathsum 0 0 n 0 0 (setWidth y n)) (exprToSBVList expr)
-      TUInt (Just n) -> liftM (\y -> Pathsum 0 0 n 0 0 (setWidth y n)) (exprToSBVList expr)
+      TCReg n -> liftM (\y -> Pathsum 0 0 (fromInteger n) 0 0 (setWidth y (fromInteger n))) (exprToSBVList expr)
+      TUInt (Just n) -> liftM (\y -> Pathsum 0 0 (fromInteger n) 0 0 (setWidth y (fromInteger n))) (exprToSBVList expr)
       TInt  _ -> liftM ket (exprToBoolPolyList expr)
       e -> error $ show expr
 
@@ -854,8 +854,8 @@ exprToBoolPolyList e = case e of
     TCReg n -> return [ofVar (varOfOffset vid i) | i <- [0..n-1]]
     TUInt (Just n) -> return [ofVar (varOfOffset vid i) | i <- [0..n-1]]
   EInt t m   -> case ty t of
-    TUInt (Just n) -> return $ setWidth (bitVec' m) n
-    _              -> return $ bitVec' m
+    TUInt (Just n) -> return $ setWidth (bitVec' (fromInteger m)) (fromInteger n)
+    _              -> return $ bitVec' (fromInteger m)
   EUOp _ PopcountOp e -> do
     pl <- exprToBoolPolyList e
     return $ sPopcount pl
@@ -967,10 +967,10 @@ simAssign p path expr = case path of
         case maybeBind of
           Nothing                    -> error "id not bound"
           Just (Scalar typ e)        -> error "not sure if allowed"
-          Just (Symbolic typ offset) -> simSymbolicAssign p (offset + j) TBool expr
+          Just (Symbolic typ offset) -> simSymbolicAssign p (offset + (fromInteger j)) TBool expr
       _ -> error "index is not an int value"
 
-simSymbolicAssign :: SBool Var -> Int -> Type -> Expr ElaboratedType -> State Env ()
+simSymbolicAssign :: SBool Var -> Integer -> Type -> Expr ElaboratedType -> State Env ()
 simSymbolicAssign p offset typ expr = do
   v <- reduceExpr expr
   case (typ, v) of
@@ -983,9 +983,9 @@ simSymbolicAssign p offset typ expr = do
     f polyl env@(Env ps@(Pathsum _ _ _ _ _ out) _ _ density qwidth) =
       let n            = length polyl
           (qreg, creg) = splitAt (if density then 2*qwidth else qwidth) out
-          oldList      = drop offset . take (offset + n) $ creg
+          oldList      = drop (fromInteger offset) . take (fromInteger offset + n) $ creg
           newList      = zipWith (\old new -> p*new + (1+p)*old) oldList polyl
-          newCreg      = take offset creg ++ newList ++ drop (offset + n) creg in
+          newCreg      = take (fromInteger offset) creg ++ newList ++ drop (fromInteger offset + n) creg in
         env { pathsum = ps { outVals = qreg ++ newCreg } }
 
 getOutPoly :: Int -> State Env (SBool Var)
@@ -1017,9 +1017,9 @@ declareSymbolic id typ init = declareWithPS id typ ps
       Nothing -> case typ of
         TBool             -> ket [ofVar id]
         TQBit             -> ket [ofVar id]
-        TCReg size        -> ket [ofVar (varOfOffset id i) | i <- [0..size-1]]
-        TUInt (Just size) -> ket [ofVar (varOfOffset id i) | i <- [0..size-1]]
-        TQReg size        -> ket [ofVar (varOfOffset id i) | i <- [0..size-1]]
+        TCReg size        -> ket [ofVar (varOfOffset id (fromInteger i)) | i <- [0..size-1]]
+        TUInt (Just size) -> ket [ofVar (varOfOffset id (fromInteger i)) | i <- [0..size-1]]
+        TQReg size        -> ket [ofVar (varOfOffset id (fromInteger i)) | i <- [0..size-1]]
 
 declareScalar :: ID -> Type -> Maybe (Expr ElaboratedType) -> State Env ()
 declareScalar id typ maybeExpr = do
@@ -1105,8 +1105,8 @@ simDeclare decl = case decl of
   DExtern _ _ _ -> error "TODO"
   DAlias  _ _   -> error "TODO"
 
-bitVec :: Int -> Int -> [SBool String]
-bitVec n size = map f [0..size-1]
+bitVec :: Integer -> Integer -> [SBool String]
+bitVec n size = map f [0..(fromIntegral size-1)]
   where
     f i = if testBit n i then 1 else 0
 
@@ -1136,7 +1136,7 @@ applyModifier ps mod = case mod of
   MCtrl _ False (Just expr) -> do
     e <- reduceExpr expr
     case e of
-      VInt n -> return $ iterate controlled ps !! n
+      VInt n -> return $ iterate controlled ps !! (fromIntegral n)
   MInv _ -> return $ dagger ps
 
 simGate :: SBool Var -> ID -> [Modifier ElaboratedType] -> [Expr ElaboratedType] -> [AccessPath ElaboratedType] -> State Env ()
@@ -1234,12 +1234,12 @@ simReset expr = case expr of
     case bind of
       Nothing -> return ()
       Just (Symbolic TQBit offset)     -> modify $ resetOffset offset
-      Just (Symbolic (TQReg n) offset) -> mapM_ modify [resetOffset i | i <- [offset..offset+n-1] ] 
+      Just (Symbolic (TQReg n) offset) -> mapM_ modify [resetOffset i | i <- [offset..offset+(fromInteger n)-1] ] 
   where
     resetOffset offset env@(Env ps@(Pathsum _ _ _ _ _ out) _ _ False _)     =
-      env { pathsum = resetPS offset ps }
+      env { pathsum = resetPS (fromInteger offset) ps }
     resetOffset offset env@(Env ps@(Pathsum _ _ _ _ _ out) _ _ True qwidth) =
-      env { pathsum = resetPS (offset + qwidth) . resetPS offset $ ps }
+      env { pathsum = resetPS ((fromInteger offset) + qwidth) . resetPS (fromInteger offset) $ ps }
 
     resetPS offset ps@(Pathsum _ _ _ _ _ out) = ps { outVals = newOut }
       where

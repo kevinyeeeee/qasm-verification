@@ -108,7 +108,7 @@ data TypeExpr' a = TCReg  a
                  deriving (Show, Eq)
 
 type TypeExpr a = TypeExpr' (Expr a)
-type Type       = TypeExpr' Int
+type Type       = TypeExpr' Integer
 
 -- | Promotes a type to a type expression, given a value for the annotation
 asTypeExpr :: a -> Type -> TypeExpr a
@@ -207,7 +207,7 @@ data Expr a = EVar a ID
             | EIndex a (Expr a) (Expr a)
             | ECall a ID [(Expr a)]
             | EMeasure a (Expr a)
-            | EInt a Int
+            | EInt a Integer
             | EBits a [Bool]
             | EFloat a Double
             | ECmplx a (Complex Double)
@@ -486,7 +486,7 @@ exprFromSpec = efs
     efs x (Spec.Var i Nothing) = EVar x i
     efs x (Spec.Var i (Just e')) = EIndex x (EVar x i) (efs x e')
     efs x (Spec.VarDec i t) = EVarDec x i (typeFromSpec x t)
-    efs x (Spec.ILit i) = EInt x i
+    efs x (Spec.ILit i) = EInt x (toInteger i)
     efs x (Spec.RLit r) = EFloat x r
     efs x (Spec.Pi) = EPi x
     efs x (Spec.BExp e1 b e2) = EBOp x (efs x e1) (bfs b) (efs x e2)

@@ -15,7 +15,7 @@ tcFile src = case QASM3Parser.parseString src of
       Left error -> printErrors [error]
       Right prog -> case tcQasm prog of
         Left errors -> printErrors errors
-        Right prog  -> print $ simProg prog
+        Right prog  -> print $ pathsum (simProg prog)
 
 parseArgs :: [String] -> IO ()
 parseArgs (f:[]) | ((drop (length f - 5) f) == ".qasm") = readFile f >>= tcFile
