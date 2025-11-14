@@ -28,45 +28,6 @@ gate uma a, b, c{                   // Unmajority and add (2-CNOT form)
   cx c, b;
 }
 
-def carry(uint[n] a, uint[n] b)-> bit{
-  return a+b < a;
-}
-
-                                      // a,b are typed as uint so + is the sum rather than XOR
-@pre    A ~>  |a:uint[n]> , (B,Z) ~>  |b:uint[n+1]> , X ~>  |0>
-@post   A ~>  |a>         , (B,Z) ~>  |b+a>         , X ~>  |0>
-def cuccaro(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
-  maj A[0], B[0], X;                // Forward MAJ ripple
-  for uint i in [1:n-1] {
-    maj A[i],B[i],A[i-1];
-  }
-  cx A[n-1], Z;                     // Copy final carry s_n to Z
-  for uint t in [1:n-1] {           // Reverse UMA ripple
-    uint i = n - t; 
-    uma A[i], B[i], A[i-1]; 
-  }
-  uma A[0], B[0], X;
-}
-
-@pre    ctl ~> |c:bit>, A ~> |a:uint[n]>, B ~> |b:uint[n]>, X ~> |0>
-@post   ctl ~> |c>,     A ~> |a>,         B ~> |b + c*a>, X ~> |0>
-def cCuccaro(qubit ctl, qubit[n] A, qubit[n] B, qubit X) {
-  maj A[0], B[0], X;                // Forward MAJ ripple
-  for uint i in [1:n-2] {
-    maj A[i],B[i],A[i-1];
-  }
-  ccx ctl, A[n-2], B[n-1];
-  ccx ctl, A[n-1], B[n-1];
-  for uint t in [2:n-1] {           // Reverse UMA ripple
-    uint i = n - t; 
-    inv @ maj A[i], B[i], A[i-1]; 
-    ccx ctl, A[i-1], B[i];
-    ccx ctl, A[i], B[i];
-  }
-  inv @ maj A[0], B[0], X; 
-  ccx ctl, A[0], B[0];
-}
-
 @pre   A ~> |a:uint[n]>, B ~> |b:uint[n]>, C ~> |0>,   X ~> |0>
 @post  A ~> |a>,         B ~> |b>,         C ~> |a*b>, X ~> |0>
 def oopMult(qubit[n] A, qubit[n] B, qubit[n] C, qubit X) {
