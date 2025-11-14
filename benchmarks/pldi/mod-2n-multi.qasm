@@ -2,7 +2,7 @@ OPENQASM 3.0;
 
 include "stdgates.inc";
 
-const uint n = 4;
+const uint n = 3;                   
 
 @pre    a ~>  |qa:bit>            , b ~>  |qb:bit>, c ~>  |qc:bit>
 @post   a ~>  |qa*qb+qa*qc+qb*qc> , b ~>  |qa+qb> , c ~>  |qa+qc>
@@ -26,45 +26,6 @@ gate uma a, b, c{                   // Unmajority and add (2-CNOT form)
   ccx c, b, a;
   cx a, c;      
   cx c, b;
-}
-
-def carry(uint[n] a, uint[n] b)-> bit{
-  return a+b < a;
-}
-
-                                      // a,b are typed as uint so + is the sum rather than XOR
-@pre    A ~>  |a:uint[n]> , (B,Z) ~>  |b:uint[n+1]> , X ~>  |0>
-@post   A ~>  |a>         , (B,Z) ~>  |b+a>         , X ~>  |0>
-def cuccaro(qubit[n] A, qubit[n] B, qubit X, qubit Z) {
-  maj A[0], B[0], X;                // Forward MAJ ripple
-  for uint i in [1:n-1] {
-    maj A[i],B[i],A[i-1];
-  }
-  cx A[n-1], Z;                     // Copy final carry s_n to Z
-  for uint t in [1:n-1] {           // Reverse UMA ripple
-    uint i = n - t; 
-    uma A[i], B[i], A[i-1]; 
-  }
-  uma A[0], B[0], X;
-}
-
-@pre    ctl ~> |c:bit>, A ~> |a:uint[n]>, B ~> |b:uint[n]>, X ~> |0>
-@post   ctl ~> |c>,     A ~> |a>,         B ~> |b + c*a>, X ~> |0>
-def cCuccaro(qubit ctl, qubit[n] A, qubit[n] B, qubit X) {
-  maj A[0], B[0], X;                // Forward MAJ ripple
-  for uint i in [1:n-2] {
-    maj A[i],B[i],A[i-1];
-  }
-  ccx ctl, A[n-2], B[n-1];
-  ccx ctl, A[n-1], B[n-1];
-  for uint t in [2:n-1] {           // Reverse UMA ripple
-    uint i = n - t; 
-    inv @ maj A[i], B[i], A[i-1]; 
-    ccx ctl, A[i-1], B[i];
-    ccx ctl, A[i], B[i];
-  }
-  inv @ maj A[0], B[0], X; 
-  ccx ctl, A[0], B[0];
 }
 
 @pre   A ~> |a:uint[n]>, B ~> |b:uint[n]>, C ~> |0>,   X ~> |0>
@@ -198,6 +159,12 @@ def SWAP(qubit[n] A, qubit[n] B) {
   for uint i in [0:n-1] { swap A[i], B[i]; }
 }
 
+@pre  ctl ~> |c:bit>, A ~> |a:uint[n]>,     B ~> |b:uint[n]>
+@post ctl ~> |c>,     A ~> |c*b + (~c)*a>, B ~> |c*a + (~c)*b>
+def cSWAP(qubit ctl, qubit[n] A, qubit[n] B) {
+  for uint i in [0:n-1] { ctrl @ swap ctl, A[i], B[i]; }
+}
+
 def minv(uint[n] a)-> uint[n] {
   uint[n] ret = 1;
   for uint i in [1:2**n]{      
@@ -222,3 +189,22 @@ def inPlaceMult(uint[n] A, qubit[n] B, qubit[n] C, qubit X) {
   constUnmult(minv(A), B, C, X);
 }
 
+@pre   A ~> a:uint[n]{ a % 2 == 1 }, ctl ~> |c:bit>, B ~> |b:uint[n]>,      C ~> |0>,D ~> |0>,   X ~> |0>
+@post                                ctl ~> |c>,     B ~> |c*b*a + (~c)*b>, C ~> |0>,D ~> |0>,   X ~> |0>
+def cMult(qubit ctl, uint[n] A, qubit[n] B, qubit[n] C, qubit[n] D, qubit X) {
+  x ctl;
+  cSWAP(ctl, B, C);
+  inPlaceMult(A, B, D, X);
+  cSWAP(ctl, B, C);
+  x ctl;
+}
+
+@pre   A ~> a:uint[n]{ a % 2 == 1 }, B ~> |b:uint[n]>, C ~> |0>,      ANC1 ~> |0>, ANC2 ~> |0>,  X ~> |0>
+@post                                B ~> |b>,         C ~> |a ^ b>, ANC1 ~> |0>, ANC2 ~> |0>,  X ~> |0>
+def modExp(uint[n] A, qubit[n] B, qubit[n] C, qubit[n] ANC1, qubit[n] ANC2, qubit X) {
+  x C[0];
+  for int i in [0:n-1] {
+    cMult(B[i], A, C, ANC1, ANC2);
+    A = A * A;
+  }
+}
