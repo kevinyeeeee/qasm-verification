@@ -70,6 +70,7 @@ library
                        Feynman.Frontend.OpenQASM3.Spec
                        Feynman.Frontend.OpenQASM3.Spec.Lexer
                        Feynman.Frontend.OpenQASM3.Spec.Parser
+                       Feynman.Timing
 
   build-tools:         alex, happy
   build-depends:       QuickCheck >= 2.8.2,

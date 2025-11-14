@@ -1,5 +1,5 @@
 OPENQASM 3.0;
-const uint n = 70;
+const uint n = 100;
 @pre a ~> |q:uint[n]>
 @post a ~> sum{r:uint[n]}.exp(2*q*r/(2^n))|r>
 def qftn(qubit[n] a) {

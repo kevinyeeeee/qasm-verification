@@ -23,6 +23,9 @@ import Control.Monad (forM)
 
 import qualified Debug.Trace as Trace
 import Feynman.Frontend.OpenQASM3.Syntax (unOpNode)
+import GHC.IO (unsafePerformIO)
+import System.CPUTime
+import Feynman.Timing (addSimulationTime, addCheckingTime)
 
 isPowerOfTwo :: (Bits i, Integral i) => i -> Bool
 isPowerOfTwo n = n > 0 && (n .&. (n - 1)) == 0
@@ -658,7 +661,8 @@ verifyDef pre post refs binds body = do
 
 verifyDef' :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [Expr ElaboratedType] -> [(ID, Type)] -> Stmt ElaboratedType -> State Env (Maybe (Pathsum DMod2))
 verifyDef' pre post refs bindings body = do
-  env' <- get
+  let start = unsafePerformIO getCPUTime
+  env' <- start `seq` get
   modify $ \env -> (initEnv True) { globals = globals env }
   applyPre 
   preSum <- gets pathsum 
@@ -670,12 +674,14 @@ verifyDef' pre post refs bindings body = do
   do { mapM applyRefinement refs }
   postPS <- discardExcept outPaths
   modify $ \env -> env'
-  if checkPost prePS postPS then
+  if checkPost start prePS postPS then
     return $ Just $ sumAll (postSum <> dagger preSum)
   else
     return Nothing
   where
-    checkPost ps ps' = if grind ps ~~= grind ps' then True else
+    checkPost start ps ps' =
+      let middle = unsafePerformIO (do putStr ""; getCPUTime) in
+      if middle `seq` grind ps ~~= grind ps' then (unsafePerformIO (do {end <- getCPUTime; addCheckingTime middle end; addSimulationTime start middle }) `seq` True) else
       Trace.trace (show (grind ps) ++ " " ++ show (grind ps')) False
 
     (outPaths, _) = unzip post

@@ -179,7 +179,7 @@ def gather_data(path, base, name):
         averages = [average(col) for col in cols]
         return averages
 
-    gather_col([],ctime_combiner,["ComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
+    gather_col([],ctime_combiner,["SimulationTime","CheckingTime","ComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
 
     return current_data
 
@@ -249,8 +249,9 @@ def makegraph():
     def create_line_plot(data, outputname,style,width):
         xs = [x for x in project_column_from_csv(data, "Test")]
         ys = [y for y in project_column_from_csv(data, "ComputationTime")]
-        xs = [int(x) for x, y in zip(xs, ys) if can_be_float(y)]
-        ys = [float(y) for y in ys if can_be_float(y)]
+        xys = [(int(x),float(y)) for x, y in zip(xs, ys) if can_be_float(y)]
+        xys = sorted(xys, key=lambda x: x[0])
+        xs,ys = zip(*xys)
         print(xs)
         print(ys)
         ax.plot(xs,ys,marker='.',label=outputname)
