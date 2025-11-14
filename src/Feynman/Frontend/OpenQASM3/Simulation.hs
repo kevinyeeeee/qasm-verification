@@ -39,7 +39,7 @@ data Binding =
     Symbolic { typ :: Type, offset :: Int }
   | Scalar { typ :: Type, value :: Value }
   | Block { typ :: Type, params :: [(ID, Type)], returns :: Maybe Type, body :: Stmt ElaboratedType, summary :: Maybe (Pathsum DMod2) }
-  | Gate { typ :: Type, gparams :: [ID], gargs :: [ID], body :: Stmt ElaboratedType }
+  | Gate { typ :: Type, gparams :: [ID], gargs :: [ID], body :: Stmt ElaboratedType, summary :: Maybe (Pathsum DMod2)}
   deriving (Show)
 
 data Value =
@@ -194,6 +194,7 @@ offsetListOfPath path = do
           Symbolic (TQReg n) offset -> return [offset..offset+n-1]
           Symbolic TQBit     offset -> return [ offset ]
           Symbolic (TCReg n) offset -> return $ map (+cOffset) [offset.. offset+n-1]
+          Symbolic (TUInt (Just n)) offset -> return $ map (+cOffset) [offset.. offset+n-1]
     AIndex _ vid e -> do
       e' <- reduceExpr e
       case e' of
@@ -660,14 +661,14 @@ verifyDef' :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath
 verifyDef' pre post refs bindings body = do
   env' <- get
   modify $ \env -> (initEnv True) { globals = globals env }
-  applyPre 
+  eqRefs <- applyPre 
   preSum <- gets pathsum 
-  do { mapM applyRefinement refs; simStmt 1 body }
+  do { mapM applyRefinement refs; mapM applyEqRef eqRefs; simStmt 1 body }
   prePS <- traceExcept outPaths
   modify $ \env -> env { pathsum = mempty, qwidth = 0, binds = Map.empty : binds env }
   applyPost
   postSum <- gets pathsum; 
-  do { mapM applyRefinement refs }
+  do { mapM applyRefinement refs; mapM applyEqRef eqRefs }
   postPS <- discardExcept outPaths
   modify $ \env -> env'
   if checkPost prePS postPS then
@@ -682,14 +683,15 @@ verifyDef' pre post refs bindings body = do
     declareAll = forM bindings (\(id, typ) -> declareSymbolic id typ Nothing)
     applyCond (path, expr) = do
       let bra = evalBra path
-      initKet <- z' path expr
+      (initKet, eqRef) <- z' path expr
       let t = grind bra <> grind initKet
       offsets <- offsetListOfPath path
       qwidth <- getQWidth
       let offsets' = if isQuantum (typeof path) then offsets ++ (map (+qwidth) offsets) else offsets
       env <- get
-      --Trace.trace ( show t ++ " " ++ show (inDeg t) ++ show (outDeg t) ++ " " ++ show offsets') (return ())
+      -- Trace.trace ( show t ++ " " ++ show (inDeg t) ++ show (outDeg t) ++ " " ++ show offsets') (return ())
       modify $ \env -> env { pathsum = applyOn t offsets' (pathsum env) }
+      return eqRef
 
     applyRefinement ref = do
       pp <- exprToSBV ref
@@ -697,22 +699,33 @@ verifyDef' pre post refs bindings body = do
       modify $ \env -> env { pathsum = sumover ["%%%"] (pred <> pathsum env) }
       modify $ \env -> env { pathsum = sumover ["'%%%"] (renameKet pred <> pathsum env) }
 
+    applyEqRef p = let pred = Pathsum 0 0 0 0 (lift $ ofVar (FVar "%%%") * (p + (rename renameFVar p))) [] in
+      modify $ \env -> env { pathsum = sumover ["%%%"] (pred <> pathsum env) }
+
     z' path expr = case typeof path of
-      TQBit   -> liftM (\x -> x <> conjugate (renameKet x)) $ simKet expr
-      TQReg _ -> liftM (\x -> x <> conjugate (renameKet x)) $ simKet expr
-      TBool   -> liftM (\a -> Pathsum 0 0 1 0 0 [a]) (exprToSBV expr)
-      TCReg n -> liftM (\y -> Pathsum 0 0 n 0 0 (setWidth y n)) (exprToSBVList expr)
-      TUInt (Just n) -> liftM (\y -> Pathsum 0 0 n 0 0 (setWidth y n)) (exprToSBVList expr)
-      TInt  _ -> liftM ket (exprToBoolPolyList expr)
+      TQBit   -> liftM (\x -> (x <> conjugate (renameKet x), [])) $ simKet (Just 1) expr
+      TQReg n -> liftM (\x -> (x <> conjugate (renameKet x), [])) $ simKet (Just n) expr
+      TBool   -> do
+        p <- exprToSBV expr
+        return $ (Pathsum 0 0 1 0 0 [p], [p])
+      TCReg n -> do
+        pl <- exprToSBVList expr
+        return $ (Pathsum 0 0 n 0 0 (setWidth pl n), pl)
+      TUInt (Just n) -> do
+        pl <- exprToSBVList expr
+        return $ (Pathsum 0 0 n 0 0 (setWidth pl n), pl)
+      TInt  _ -> liftM (\i -> (ket i, [])) (exprToBoolPolyList expr)
       e -> error $ show expr
 
     applyPre = do 
       declareAll
-      mapM applyCond pre
+      eqRefs <- mapM applyCond pre
+      return $ concat eqRefs
 
     applyPost = do
       declareAll
       mapM applyCond post
+      Trace.trace ("applied") (return ())
 
 -- | takes access paths to symbolic state destructor (bra) 
 evalBra :: AccessPath ElaboratedType -> Pathsum DMod2
@@ -734,9 +747,9 @@ evalBra path = dens . simA $ path
       else
         (\x -> x)
 
-simKet :: Expr ElaboratedType -> State Env (Pathsum DMod2)
-simKet expr = case expr of
-  Tensor _ e1 e2          -> liftM2 (<>) (simKet e1) (simKet e2)
+simKet :: Maybe Int -> Expr ElaboratedType -> State Env (Pathsum DMod2)
+simKet n expr = case expr of
+  Tensor _ e1 e2          -> liftM2 (<>) (simKet Nothing e1) (simKet Nothing e2)
   Sum _ svars e           -> do
     let (ids, typs) = unzip svars
     typs <- mapM (traverse $ typeExprToType) typs
@@ -747,30 +760,35 @@ simKet expr = case expr of
         bindVar id $ Scalar ty v
       TUInt (Just n) -> let v = VPolyList [ ofVar $ FVar (varOfOffset id i) | i <- [0..n-1] ] in do
         bindVar id $ Scalar ty v
-    ps <- simKet e
+    ps <- simKet n e
     popEnv
     return $ sumOver svars ps
   EUOp _ ExpOp e          -> do
     pp <- exprToPhasePoly e
     return $ Pathsum 0 0 0 0 pp []
-  Ket _ (EVar vtyp vid) -> do
-    case ty vtyp of
-      TBool          -> return $ ket [ ofVar vid ]
-      TCReg n        -> return $ ket [ ofVar (varOfOffset vid i) | i <- [0..n-1] ]
-      TUInt (Just m) -> return $ ket [ ofVar (varOfOffset vid i) | i <- [0..m-1] ]
+  -- Ket _ (EVar vtyp vid) -> do
+  --   case ty vtyp of
+  --     TBool          -> return $ ket [ ofVar vid ]
+  --     TCReg n        -> return $ ket [ ofVar (varOfOffset vid i) | i <- [0..n-1] ]
+  --     TUInt (Just m) -> return $ ket [ ofVar (varOfOffset vid i) | i <- [0..m-1] ]
   Ket _ e                 -> do
     v <- reduceExpr e
-    maybeP <- getPolyOfValue v 
+    maybeP <- getPolyOfValue v
     case maybeP of
-      Just p  -> return $ Pathsum 0 0 1 0 0 [p]
+      Just p  -> case n of
+        Nothing -> return $ Pathsum 0 0 1 0 0 [p]
+        Just n  -> return $ Pathsum 0 0 n 0 0 (setWidth [p] n)
       Nothing -> do
         pList <- getPolyListOfValue v
-        return $ Pathsum 0 0 (length $ fromJust pList) 0 0 (fromJust pList)
+        let outs = case n of
+              Just n -> setWidth (fromJust pList) n
+              _      -> fromJust pList 
+        return $ Pathsum 0 0 (length outs) 0 0 outs
   EBOp _ e1 PlusOp e2 -> do
-    ps1 <- simKet e1
-    ps2 <- simKet e2
+    ps1 <- simKet n e1
+    ps2 <- simKet n e2
     return $ ps1 + ps2
-  EBOp _ e1 TimesOp e2 -> liftM2 (<>) (simKet e1) (simKet e2)
+  EBOp _ e1 TimesOp e2 -> liftM2 (<>) (simKet Nothing e1) (simKet Nothing e2)
 
 exprToDyadicPoly :: Expr ElaboratedType -> State Env (PseudoBoolean Var DyadicRational)
 exprToDyadicPoly e = case typeof e of
@@ -785,7 +803,7 @@ exprToDyadicPoly e = case typeof e of
         do
           pp <- exprToDyadicPoly e1
           return $ pp * constant (toDyadic $ 1.0 / fromIntegral n)
-      else error "phase poly not dyadic"
+      else error $ "phase poly not dyadic: " ++ show n
     EBOp _ e1 TimesOp e2       -> do
       pp1 <- exprToDyadicPoly e1
       pp2 <- exprToDyadicPoly e2
@@ -978,7 +996,8 @@ simSymbolicAssign p offset typ expr = do
     (TBool  , VBool False) -> modify $ f [0]
     (TBool  , VBool True ) -> modify $ f [1]
     (TCReg n, VPolyList l) -> modify $ f l 
-    (TUInt n, VPolyList l) -> modify $ f l
+    (TUInt n, v)           -> getPolyListOfValue v >>= \l -> modify $ f (fromJust l)
+    (t, v) -> error $ show t ++ " " ++ show v
   where
     f polyl env@(Env ps@(Pathsum _ _ _ _ _ out) _ _ density qwidth) =
       let n            = length polyl
@@ -1046,7 +1065,7 @@ declareBlock id params returns body = let (_, sig) = unzip params in
 
 declareGate :: ID -> [ID] -> [ID] -> Stmt ElaboratedType -> State Env ()
 declareGate id cparams qargs body =
-  bindGlobal id (Gate (TGate (length cparams) (length qargs)) cparams qargs body)
+  bindGlobal id (Gate (TGate (length cparams) (length qargs)) cparams qargs body Nothing)
 
 simDeclare :: Decl ElaboratedType -> State Env ()
 simDeclare decl = case decl of
@@ -1092,6 +1111,7 @@ simDeclare decl = case decl of
             v <- reduceExpr e
             case v of
               VInt j -> declareSymbolic vid (TUInt $ Just size) (Just $ bitVec j size)
+              _ -> error $ show decl
         _   -> error $ "invalid register size"
     typ -> do
       newtyp <- typeExprToType typ
@@ -1159,7 +1179,7 @@ simExpr p (ECall _ fid args) = do
   bind <- searchBinding fid
   args' <- (liftM $ map fromJust) $ mapM (simExpr p) args
   case bind of
-    Just (Block _ params _ body Nothing) -> do
+    Just (Block _ params _ body _) -> do
       pushEmptyEnv
       bindParams params args'
       ret <- simStmt p body
@@ -1208,7 +1228,8 @@ getGatePS id params = do
     (gid, cs) -> do
       mBind <- searchBinding gid
       case mBind of
-        Just (Gate _ params args body) -> do
+        Just (Gate _ _ _ _ (Just gatePS)) -> return gatePS
+        Just (Gate _ params args body Nothing) -> do
           ps <- gets pathsum
           density <- gets density 
           qwidth <- gets qwidth
@@ -1221,7 +1242,10 @@ getGatePS id params = do
           gatePS <- gets pathsum                                                                                         
           popEnv
           modify $ \env -> env { pathsum = ps , density = density , qwidth = qwidth }
-          return $ gatePS
+          if cs == [] then
+            addSummary gid gatePS >> return gatePS
+          else  
+            return $ gatePS
         _ -> error $ gid ++ " is not a gate"
   where
     toRad = fromDyadic . discretize . Continuous . fromJust . floatOfValue

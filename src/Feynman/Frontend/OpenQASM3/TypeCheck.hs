@@ -401,7 +401,7 @@ tcBOp typ bop typ' = case bop of
   TimesOp  | isNumeric typ && isNumeric typ' -> typ''
   TimesOp  | isBitvec typ && isBitvec typ'   -> typ''
   DivOp    | isNumeric typ && isNumeric typ' -> typ''
-  ModOp    | isNumeric typ && isNumeric typ' -> typ''
+  ModOp    | isNumeric typ && isNumeric typ' -> Just typ
   PowOp    | isNumeric typ && isNumeric typ' -> typ''
   ConcatOp | isIndexable typ && isIndexable typ' -> typ''
   _ -> Nothing
@@ -851,9 +851,9 @@ tcAccessPath ap = case ap of
     paths <- mapM tcAccessPath paths
     let p = head paths
     let listtype = if isQuantum (typeof p) then
-          foldl addType TQBit paths
+          foldl addType (TQReg 0) paths
         else
-          foldl addType (TCReg 1) paths
+          foldl addType (TCReg 0) paths
     return $ AList (pureType listtype) paths
   where
     addType t a = case (isQuantum t, isQuantum (typeof a)) of
