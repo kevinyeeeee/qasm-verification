@@ -1,4 +1,4 @@
-@pre q ~> |e> , (a, b) ~> sum{x:bit}.|x,x>
+@pre q ~> |e:bit> , (a, b) ~> sum{x:bit}.|x,x>
 @post b ~> |e>
 def tele(qubit q, qubit a, qubit b,) {
   cx q, a;
