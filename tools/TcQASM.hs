@@ -20,10 +20,14 @@ tcFile src = case QASM3Parser.parseString src of
           print $ pathsum (simProg prog)
           st <- getStringSimulationTime
           ct <- getStringCheckingTime
+          count <- getStringExpansionCount
           putStrLn ";"
           putStrLn st
           putStrLn ";"
           putStrLn ct
+          putStrLn ";"
+          putStrLn count
+
 
 parseArgs :: [String] -> IO ()
 parseArgs (f:[]) | ((drop (length f - 5) f) == ".qasm") = readFile f >>= tcFile

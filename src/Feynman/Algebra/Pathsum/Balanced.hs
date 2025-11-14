@@ -38,6 +38,8 @@ import Feynman.Algebra.Polynomial.Univariate (Cyclotomic, unity, constCyc)
 import qualified Feynman.Algebra.Polynomial.Univariate as Uni
 import Feynman.Algebra.Polynomial.Multilinear
 
+import qualified Debug.Trace as Trace
+
 {-----------------------------------
  Variables
  -----------------------------------}
@@ -1318,9 +1320,12 @@ normalizeClifford sop = go $ sop .> hLayer .> hLayer where
 (~~*) :: (Eq g, Periodic g, Dyadic g) => Pathsum g -> Pathsum g -> Bool
 (~~*) a b = f a == f b where f = canonicalizeKet . grind . vectorize . (\a -> a <> dagger a)
 
--- | Decision procedure for equivalence via fallback to variable expansion
 (~~=) :: Pathsum DMod2 -> Pathsum DMod2 -> Bool
-(~~=) a b = a' == b' || go a' b' where
+(~~=) a b = fst (uglyequiv a b)
+
+-- | Decision procedure for equivalence via fallback to variable expansion
+uglyequiv :: Pathsum DMod2 -> Pathsum DMod2 -> (Bool,Int)
+uglyequiv a b = if a' == b' then (True,0) else (res,num) where
   a' = dropScalars . reduce . vectorize . bind fv $ a
   b' = dropScalars . reduce . vectorize . bind fv $ b
 
@@ -1329,10 +1334,19 @@ normalizeClifford sop = go $ sop .> hLayer .> hLayer where
 
   fv = union (freeVars a) (freeVars b)
 
-  go a b | a == b               = True
-         | outDeg a /= outDeg b = False
-         | outDeg a == 0        = amplitude [] a [] == amplitude [] b []
-         | otherwise            = go a0 b0 && go a1 b1 where
+  (res,num) = go a' b'
+
+  go a b | a == b               = (True, 0)
+         | outDeg a /= outDeg b = (False, 0)
+         | outDeg a == 0        =
+           let (l, n1) = simulate' a
+               (r, n2) = simulate' b
+           in
+             (l == r, n1+n2)
+         | otherwise            = (r1 && r2, n1+n2+2) where
+             (r1, n1) = go a0 b0
+             (r2, n2) = go a1 b1
+
              i  = chooseIndex (a <> b) `mod` outDeg a
 
              p0 = identity i <> bra [0] <> identity (outDeg a - 1 - i)
@@ -1490,6 +1504,23 @@ simulate sop xs = go $ sop * ket (map constant xs)
 -- | Evaluates a pathsum on a given input and output
 amplitude :: [FF2] -> Pathsum DMod2 -> [FF2] -> Cyclotomic DyadicRational
 amplitude o sop i = (simulate (bra (map constant o) * sop) i)![]
+
+-- | Simulates a pathsum on a given input
+simulate' :: Pathsum DMod2 -> (Cyclotomic DyadicRational, Int)
+simulate' = go
+  where go ps  = case grind ps of
+          (Pathsum k 0 0 0 p []) ->
+            let phase     = pathPhase ps
+                magnitude = pathMagnitude ps
+            in
+              (magnitude * phase, 0)
+          (Pathsum k 0 0 i p []) ->
+            let (p0, p1) = expand ps (PVar $ i-1)
+                (p0',n0) = go p0
+                (p1',n1) = go p1
+            in
+              (p0' + p1', n0+n1)
+          _                      -> error "Incompatible dimensions"
 
 -- | Set cover solver
 setCover :: Ord a => [a] -> [[a]] -> [a]

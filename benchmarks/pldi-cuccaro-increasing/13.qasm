@@ -1,4 +1,4 @@
-const uint n = 14;
+const uint n = 13;
 
 def majority(bool a, bool b, bool c) -> bool { 
   return (a&&b) ^ (a&&c) ^ (b&&c);

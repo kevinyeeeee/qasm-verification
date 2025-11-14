@@ -179,7 +179,7 @@ def gather_data(path, base, name):
         averages = [average(col) for col in cols]
         return averages
 
-    gather_col([],ctime_combiner,["SimulationTime","CheckingTime","ComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
+    gather_col([],ctime_combiner,["SimulationTime","CheckingTime","ExpansionCount","ComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
 
     return current_data
 
@@ -229,7 +229,7 @@ def makecsv(benchmark_path,data_file):
                 assert(join(path, base)[rootlength-1] == '/')
                 test_name = join(path, base).replace("_","-")[rootlength:]
                 print(test_name)
-                if (not (any(row["Test"] == test_name for row in data))):
+                if (not (any(str(row["Test"]) == str(test_name) for row in data))):
                     current_data = gather_data(path, base, test_name)
                     data.append(current_data)
                     print_data(data,data_file)
@@ -241,12 +241,11 @@ def makecsv(benchmark_path,data_file):
             print(args)
             print_usage(args)
 
-def makegraph():
-    qftdata = load_data("qft.csv")
-    cuccarodata = load_data("cuccaro.csv")
+def makecuccarograph():
+    qftdata = load_data("cuccaro.csv")
     fig, ax = plt.subplots()
 
-    def create_line_plot(data, outputname,style,width):
+    def create_line_plot(data, outputname):
         xs = [x for x in project_column_from_csv(data, "Test")]
         ys = [y for y in project_column_from_csv(data, "ComputationTime")]
         xys = [(int(x),float(y)) for x, y in zip(xs, ys) if can_be_float(y)]
@@ -256,36 +255,104 @@ def makegraph():
         print(ys)
         ax.plot(xs,ys,marker='.',label=outputname)
 
-    #ax.step([0,60],[48.1,48.1],label="Benchmark Count",linestyle=":",
-    #        linewidth=1, dashes=(1,1))
-    create_line_plot(qftdata,"QFT",1,1)
-    create_line_plot(cuccarodata,"Cuccaro",1,1)
+    create_line_plot(qftdata,"cuccaro")
 
     ax.set_ylabel('Time (s)')
     ax.set_xlabel('Input Size')
+    xpos = 13
+    ax.axvline(x=xpos, color='red', linestyle='--', linewidth=2)
+    ax.text(xpos, ax.get_ylim()[1]+215, "timeout", ha='center', va='top', color='red')
 
-    #l = ax.legend(bbox_to_anchor=(.4,.9),borderaxespad=0,ncol=1)
-    #l = ax.legend(bbox_to_anchor=(1.6,1),borderaxespad=0)
-    #plt.setp(l.texts) 
-
-    plt.xlim(0,100)
+    plt.xlim(0,15)
     plt.yticks(np.arange(0, 300.1, 50))
+
+    plt.title("Cuccaro")
+
+    fig = plt.figure(2,tight_layout=True)
+    fig.set_figheight(2)
+    fig.set_figwidth(3)
+
+    fig.savefig("generated-data/cuccaro.eps", bbox_inches='tight')
+
+def makemultgraph():
+    qftdata = load_data("mult.csv")
+    fig, ax = plt.subplots()
+
+    def create_line_plot(data, outputname):
+        xs = [x for x in project_column_from_csv(data, "Test")]
+        ys = [y for y in project_column_from_csv(data, "ComputationTime")]
+        xys = [(int(x),float(y)) for x, y in zip(xs, ys) if can_be_float(y)]
+        xys = sorted(xys, key=lambda x: x[0])
+        xs,ys = zip(*xys)
+        print(xs)
+        print(ys)
+        ax.plot(xs,ys,marker='.',label=outputname)
+
+    create_line_plot(qftdata,"mult")
+
+    ax.set_ylabel('Time (s)')
+    ax.set_xlabel('Input Size')
+    xpos = 7
+    ax.axvline(x=xpos, color='red', linestyle='--', linewidth=2)
+    ax.text(xpos, ax.get_ylim()[1]+290, "timeout", ha='center', va='top', color='red')
+
+    plt.xlim(0,8)
+    plt.yticks(np.arange(0, 300.1, 50))
+
+    plt.title("Multiply")
+
+    fig = plt.figure(3,tight_layout=True)
+    fig.set_figheight(2)
+    fig.set_figwidth(3)
+
+    fig.savefig("generated-data/mult.eps", bbox_inches='tight')
+
+def makeqftgraph():
+    qftdata = load_data("qft.csv")
+    fig, ax = plt.subplots()
+
+    def create_line_plot(data, outputname):
+        xs = [x for x in project_column_from_csv(data, "Test")]
+        ys = [y for y in project_column_from_csv(data, "ComputationTime")]
+        xys = [(int(x),float(y)) for x, y in zip(xs, ys) if can_be_float(y)]
+        xys = sorted(xys, key=lambda x: x[0])
+        xs,ys = zip(*xys)
+        print(xs)
+        print(ys)
+        ax.plot(xs,ys,marker='.',label=outputname)
+
+    create_line_plot(qftdata,"QFT")
+
+    ax.set_ylabel('Time (s)')
+    ax.set_xlabel('Input Size')
+    xpos = 160
+    ax.axvline(x=xpos, color='red', linestyle='--', linewidth=2)
+    ax.text(xpos, ax.get_ylim()[1]+5, "timeout", ha='center', va='bottom', color='red')
+
+    plt.xlim(0,200)
+    plt.yticks(np.arange(0, 300.1, 50))
+
+    plt.title("QFT")
 
     fig = plt.figure(1,tight_layout=True)
     fig.set_figheight(2)
     fig.set_figwidth(3)
 
-    fig.savefig("generated-data/times.eps", bbox_inches='tight')
+    fig.savefig("generated-data/qft.eps", bbox_inches='tight')
 
 def main(args):
-    if len(args) == 4:
+    if len(args) == 5:
         benchmark_path = args[1]
         qft_path = args[2]
         cuccaro_path = args[3]
+        mult_path = args[4]
         makecsv(benchmark_path,"data.csv")
         makecsv(qft_path,"qft.csv")
         makecsv(cuccaro_path,"cuccaro.csv")
-        makegraph()
+        makecsv(mult_path,"mult.csv")
+        makeqftgraph()
+        makecuccarograph()
+        makemultgraph()
     else:
         print_usage(args)
 

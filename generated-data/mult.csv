@@ -1,0 +1,8 @@
+Test,SimulationTime,CheckingTime,ComputationTime
+1,\na,\na,\incorrect
+2,0,0,0.13
+3,0,0,0.18
+4,0,0,0.51
+5,0,0,3.12
+6,0,0,38.05
+7,\na,\na,\incorrect

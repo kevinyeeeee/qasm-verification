@@ -25,7 +25,8 @@ import qualified Debug.Trace as Trace
 import Feynman.Frontend.OpenQASM3.Syntax (unOpNode)
 import GHC.IO (unsafePerformIO)
 import System.CPUTime
-import Feynman.Timing (addSimulationTime, addCheckingTime)
+import Feynman.Timing
+import Feynman.Algebra.Pathsum.Balanced (uglyequiv)
 
 isPowerOfTwo :: (Bits i, Integral i) => i -> Bool
 isPowerOfTwo n = n > 0 && (n .&. (n - 1)) == 0
@@ -682,7 +683,8 @@ verifyDef' pre post refs bindings body = do
   where
     checkPost start ps ps' =
       let middle = unsafePerformIO (do putStr ""; getCPUTime) in
-      if middle `seq` grind ps ~~= grind ps' then (unsafePerformIO (do {end <- getCPUTime; addCheckingTime middle end; addSimulationTime start middle }) `seq` True) else
+      let (res,count) = middle `seq` uglyequiv (grind ps) (grind ps') in
+      if res then (unsafePerformIO (do {end <- getCPUTime; addCheckingTime middle end; addSimulationTime start middle; addExpansionCount count }) `seq` True) else
       Trace.trace (show (grind ps) ++ " " ++ show (grind ps')) False
 
     (outPaths, _) = unzip post

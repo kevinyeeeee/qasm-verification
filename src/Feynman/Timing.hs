@@ -7,8 +7,21 @@ import Numeric (showFFloat)
 
 formatFloatN floatNum numOfDecimals = showFFloat (Just numOfDecimals) floatNum ""
 
+expansionCount :: IORef Int
+expansionCount = unsafePerformIO (newIORef 0)
+
+addExpansionCount :: Int -> IO ()
+addExpansionCount newCount = do
+        totalCount <- readIORef expansionCount
+        writeIORef expansionCount (totalCount+newCount)
+
+getStringExpansionCount :: IO String
+getStringExpansionCount = do
+    t <- readIORef expansionCount
+    return (show t)
+
 simulationTime :: IORef Double
-simulationTime = unsafePerformIO (newIORef 0)
+simulationTime = unsafePerformIO (newIORef 0.0000000000000001)
 
 addSimulationTime :: Integer -> Integer -> IO ()
 addSimulationTime start end = do
