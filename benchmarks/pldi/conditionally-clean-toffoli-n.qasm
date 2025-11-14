@@ -1,3 +1,6 @@
+// Implements the Section 5.2 / Figure 3 construction from
+// Khattar–Gidney (arXiv:2407.17966): the 2n−3 Toffoli, O(n)-depth
+// n-bit Toffoli using one clean ancilla.
 include "stdgates.inc";
 
 const uint n = 8;
