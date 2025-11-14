@@ -243,6 +243,7 @@ def makecsv(benchmark_path,data_file):
 
 def makegraph():
     qftdata = load_data("qft.csv")
+    cuccarodata = load_data("cuccaro.csv")
     fig, ax = plt.subplots()
 
     def create_line_plot(data, outputname,style,width):
@@ -252,24 +253,22 @@ def makegraph():
         ys = [float(y) for y in ys if can_be_float(y)]
         print(xs)
         print(ys)
-        ax.plot(xs,ys,marker='o',label="QFT")
-
-    normal_size = 2
-    full_size = 3
+        ax.plot(xs,ys,marker='.',label=outputname)
 
     #ax.step([0,60],[48.1,48.1],label="Benchmark Count",linestyle=":",
     #        linewidth=1, dashes=(1,1))
-    create_line_plot(qftdata,1,1,1)
+    create_line_plot(qftdata,"QFT",1,1)
+    create_line_plot(cuccarodata,"Cuccaro",1,1)
 
     ax.set_ylabel('Time (s)')
     ax.set_xlabel('Input Size')
 
-    l = ax.legend(bbox_to_anchor=(.4,.9),borderaxespad=0,ncol=3)
+    #l = ax.legend(bbox_to_anchor=(.4,.9),borderaxespad=0,ncol=1)
     #l = ax.legend(bbox_to_anchor=(1.6,1),borderaxespad=0)
-    plt.setp(l.texts) 
+    #plt.setp(l.texts) 
 
     plt.xlim(0,100)
-    plt.yticks(np.arange(0, 30.1, 10))
+    plt.yticks(np.arange(0, 300.1, 50))
 
     fig = plt.figure(1,tight_layout=True)
     fig.set_figheight(2)
@@ -278,11 +277,13 @@ def makegraph():
     fig.savefig("generated-data/times.eps", bbox_inches='tight')
 
 def main(args):
-    if len(args) == 3:
+    if len(args) == 4:
         benchmark_path = args[1]
         qft_path = args[2]
+        cuccaro_path = args[3]
         makecsv(benchmark_path,"data.csv")
         makecsv(qft_path,"qft.csv")
+        makecsv(cuccaro_path,"cuccaro.csv")
         makegraph()
     else:
         print_usage(args)
