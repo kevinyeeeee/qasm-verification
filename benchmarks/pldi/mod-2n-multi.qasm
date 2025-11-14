@@ -2,11 +2,8 @@ OPENQASM 3.0;
 
 include "stdgates.inc";
 
-const uint n = 4;                   // ceil(log2(10)) = 4
-// const uint N = 16;               // assume N=2^n
-const uint[n] AA = 3;                // Select a,N coprime.
-const uint csize = 8;               // The size of the control register determines the accuracy of the rational approximation.
-                                    // Variables inside ket are bit-variables by default, so + is XOR and * is AND.
+const uint n = 4;
+
 @pre    a ~>  |qa:bit>            , b ~>  |qb:bit>, c ~>  |qc:bit>
 @post   a ~>  |qa*qb+qa*qc+qb*qc> , b ~>  |qa+qb> , c ~>  |qa+qc>
 gate maj a, b, c {                  // In-place majority
