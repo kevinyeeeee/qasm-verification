@@ -9,6 +9,16 @@ from os.path import splitext, join
 import subprocess
 import sys
 import time
+import matplotlib
+import matplotlib as mpl
+mpl.use('pgf')
+import numpy as np
+import matplotlib.pyplot as plt
+
+plt.rc('font', size=10)
+plt.rc('legend', fontsize=10)
+plt.rcParams['text.usetex'] = True
+plt.rcParams['text.latex.preamble'] = r'\usepackage{libertine}'
 
 from math import sqrt
 
@@ -25,6 +35,9 @@ def can_be_int(s):
         return True
     except ValueError:
         return False
+    
+def project_column_from_csv(csv_obj, col_name):
+    return [r[col_name] for r in csv_obj]
 
 def simple_write_to_file(fname,data):
     text_file = open(fname,"w")
@@ -60,7 +73,7 @@ TEST_EXT = '.qasm'
 BASE_FLAGS = []
 TIMEOUT_TIME = 300
 
-REPETITION_COUNT = 10
+REPETITION_COUNT = 1
 
 def ensure_dir(f):
     d = os.path.dirname(f)
@@ -166,12 +179,12 @@ def gather_data(path, base, name):
         averages = [average(col) for col in cols]
         return averages
 
-    gather_col([],ctime_combiner,["ComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
+    gather_col([],ctime_combiner,["SimulationTime","CheckingTime","ComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
 
     return current_data
 
 def extract_test(x):
-    return x["Test"]
+    return str(x["Test"])
 
 def specsize_compare(x,y):
     return int(x["SpecSize"])-int(y["SpecSize"])
@@ -205,15 +218,13 @@ def load_data(name):
             return [row for row in datareader]
     except:
         return []
-
-def main(args):
-    if len(args) == 2:
-        benchmark_path = args[1]
-        data = load_data("data.csv")
+    
+def makecsv(benchmark_path,data_file):
+        data = load_data(data_file)
         print("existing data")
         print(data)
-        rootlength = len(benchmark_path)
         if os.path.exists(benchmark_path) and os.path.isdir(benchmark_path):
+            rootlength = len(benchmark_path)
             for path, base in find_tests(benchmark_path):
                 assert(join(path, base)[rootlength-1] == '/')
                 test_name = join(path, base).replace("_","-")[rootlength:]
@@ -221,14 +232,60 @@ def main(args):
                 if (not (any(row["Test"] == test_name for row in data))):
                     current_data = gather_data(path, base, test_name)
                     data.append(current_data)
-                    print_data(data,"data.csv")
+                    print_data(data,data_file)
                 else:
                     print("data already retrieved")
             sort_data(data)
-            print_data(data,"data.csv")
+            print_data(data,data_file)
         else:
             print(args)
             print_usage(args)
+
+def makegraph():
+    qftdata = load_data("qft.csv")
+    cuccarodata = load_data("cuccaro.csv")
+    fig, ax = plt.subplots()
+
+    def create_line_plot(data, outputname,style,width):
+        xs = [x for x in project_column_from_csv(data, "Test")]
+        ys = [y for y in project_column_from_csv(data, "ComputationTime")]
+        xys = [(int(x),float(y)) for x, y in zip(xs, ys) if can_be_float(y)]
+        xys = sorted(xys, key=lambda x: x[0])
+        xs,ys = zip(*xys)
+        print(xs)
+        print(ys)
+        ax.plot(xs,ys,marker='.',label=outputname)
+
+    #ax.step([0,60],[48.1,48.1],label="Benchmark Count",linestyle=":",
+    #        linewidth=1, dashes=(1,1))
+    create_line_plot(qftdata,"QFT",1,1)
+    create_line_plot(cuccarodata,"Cuccaro",1,1)
+
+    ax.set_ylabel('Time (s)')
+    ax.set_xlabel('Input Size')
+
+    #l = ax.legend(bbox_to_anchor=(.4,.9),borderaxespad=0,ncol=1)
+    #l = ax.legend(bbox_to_anchor=(1.6,1),borderaxespad=0)
+    #plt.setp(l.texts) 
+
+    plt.xlim(0,100)
+    plt.yticks(np.arange(0, 300.1, 50))
+
+    fig = plt.figure(1,tight_layout=True)
+    fig.set_figheight(2)
+    fig.set_figwidth(3)
+
+    fig.savefig("generated-data/times.eps", bbox_inches='tight')
+
+def main(args):
+    if len(args) == 4:
+        benchmark_path = args[1]
+        qft_path = args[2]
+        cuccaro_path = args[3]
+        makecsv(benchmark_path,"data.csv")
+        makecsv(qft_path,"qft.csv")
+        makecsv(cuccaro_path,"cuccaro.csv")
+        makegraph()
     else:
         print_usage(args)
 

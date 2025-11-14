@@ -25,15 +25,15 @@ import Feynman.Frontend.OpenQASM3.Core
 
 {- Basically duplicated type, but with a "top" type -}
 data TypeConstraints = 
-    ConsCReg Int
+    ConsCReg Integer
   | ConsQBit
-  | ConsQReg Int 
+  | ConsQReg Integer
   | ConsBool 
-  | ConsUInt (Maybe Int)
-  | ConsInt (Maybe Int)
-  | ConsAngle (Maybe Int)
-  | ConsFloat (Maybe Int)
-  | ConsCmplx (Maybe Int)
+  | ConsUInt (Maybe Integer)
+  | ConsInt (Maybe Integer)
+  | ConsAngle (Maybe Integer)
+  | ConsFloat (Maybe Integer)
+  | ConsCmplx (Maybe Integer)
   | ConsUnit
   | ConsRange TypeConstraints
   | ConsGate { numCargs :: Int, numQargs :: Int }
@@ -46,7 +46,7 @@ data ElaboratedType = EType { ty :: Type,
                               isConstant :: Bool,
                               -- Int constants, the only constants needed
                               -- for type checking
-                              value :: Maybe Int
+                              value :: Maybe Integer
                             } deriving (Show)
 
 -- | Insert a type into an elaborated type
@@ -58,7 +58,7 @@ constType :: Type -> ElaboratedType
 constType ty = EType ty True Nothing
 
 -- | Insert a constant type into an elaborated type
-constInt :: Type -> Int -> ElaboratedType
+constInt :: Type -> Integer -> ElaboratedType
 constInt ty i = EType ty True (Just i)
 
 -- | Gets the base type of an AST node annotated with an elaborated type
@@ -346,7 +346,7 @@ unify a b | a == b = Just a
                 _       -> Nothing
 
 -- | Unifies widths of sized types
-unifyWidth :: Maybe Int -> Maybe Int -> Maybe Int
+unifyWidth :: Maybe Integer -> Maybe Integer -> Maybe Integer
 unifyWidth Nothing  _        = Nothing
 unifyWidth _        Nothing  = Nothing
 unifyWidth (Just i) (Just j) = Just (max i j)
@@ -653,7 +653,7 @@ tcExpr expr0 = case expr0 of
         return $ EMeasure (pureType TBool) expr
 
   EInt loc i   -> return $ EInt (constInt (TInt Nothing) i) i
-  EBits loc xs -> return $ EBits (constType (TCReg $ length xs)) xs
+  EBits loc xs -> return $ EBits (constType (TCReg $ toInteger $ length xs)) xs
   EFloat loc r -> return $ EFloat (constType (TFloat Nothing)) r
   ECmplx loc c -> return $ ECmplx (constType (TCmplx Nothing)) c
 
@@ -769,7 +769,7 @@ tcExpr expr0 = case expr0 of
 
 
 -- | Evaluates a suitably typed expression as a UInt
-evalUInt :: Expr ElaboratedType -> TC Int
+evalUInt :: Expr ElaboratedType -> TC Integer
 evalUInt expr = case expr of
   EVar _ var -> getBinding var >>= return . fromJust . value
   EInt _ i -> return i
@@ -779,18 +779,20 @@ evalUInt expr = case expr of
     pure (\a b -> evalBOp a bop b) <*> (evalUInt expr) <*> (evalUInt expr')
   ECast _ _ expr -> evalUInt expr
   _ -> error "Unimplemented"
-  where evalUOp uop i = case uop of
+  where evalUOp :: UOp -> Integer -> Integer
+        evalUOp uop i = case uop of
           UMinusOp -> (-i)
           NegOp -> complement i
-          PopcountOp -> popCount i
+          PopcountOp -> toInteger (popCount ((fromIntegral i) :: Int))
+        evalBOp :: Integer -> BinOp -> Integer -> Integer
         evalBOp i bop j = case bop of
           AndOp -> i .&. j
           OrOp -> i .|. j
           XorOp -> i `xor` j
-          LShiftOp -> i `shiftL` j
-          RShiftOp -> i `shiftR` j
-          LRotOp -> i `rotateL` j
-          RRotOp -> i `rotateR` j
+          LShiftOp -> i `shiftL` (fromIntegral j)
+          RShiftOp -> i `shiftR` (fromIntegral j)
+          LRotOp -> i `rotateL` (fromIntegral j)
+          RRotOp -> i `rotateR` (fromIntegral j)
           PlusOp -> i + j
           MinusOp -> i - j
           TimesOp -> i * j

@@ -7,6 +7,7 @@ import qualified Feynman.Frontend.OpenQASM3.Parser as QASM3Parser
 import Feynman.Frontend.OpenQASM3.Core
 import Feynman.Frontend.OpenQASM3.TypeCheck
 import Feynman.Frontend.OpenQASM3.Simulation
+import Feynman.Timing
 
 tcFile :: String -> IO ()
 tcFile src = case QASM3Parser.parseString src of
@@ -15,7 +16,14 @@ tcFile src = case QASM3Parser.parseString src of
       Left error -> printErrors [error]
       Right prog -> case tcQasm prog of
         Left errors -> printErrors errors
-        Right prog  -> print $ simProg prog
+        Right prog  -> do 
+          print $ pathsum (simProg prog)
+          st <- getStringSimulationTime
+          ct <- getStringCheckingTime
+          putStrLn ";"
+          putStrLn st
+          putStrLn ";"
+          putStrLn ct
 
 parseArgs :: [String] -> IO ()
 parseArgs (f:[]) | ((drop (length f - 5) f) == ".qasm") = readFile f >>= tcFile
