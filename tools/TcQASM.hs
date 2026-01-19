@@ -16,18 +16,9 @@ tcFile src = case QASM3Parser.parseString src of
       Left error -> printErrors [error]
       Right prog -> case tcQasm prog of
         Left errors -> printErrors errors
-        Right prog  -> do 
-          print $ pathsum (simProg prog)
-          st <- getStringSimulationTime
-          ct <- getStringCheckingTime
-          count <- getStringExpansionCount
-          putStrLn ";"
-          putStrLn st
-          putStrLn ";"
-          putStrLn ct
-          putStrLn ";"
-          putStrLn count
-
+        Right prog  -> do
+          env <- simProg prog
+          return $ env `seq` ()
 
 parseArgs :: [String] -> IO ()
 parseArgs (f:[]) | ((drop (length f - 5) f) == ".qasm") = readFile f >>= tcFile
