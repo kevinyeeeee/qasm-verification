@@ -1,4 +1,6 @@
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 {-|
 Module      : SArith
@@ -25,48 +27,43 @@ import Feynman.Algebra.Polynomial.Multilinear
  Core types
  ----------------------------}
 
-data Sign = Unsigned | Signed
-data SignWit :: Sign -> Type where
-  WitUnsigned :: SignWit 'Unsigned
-  WitSigned   :: SignWit 'Signed
-
-class SignC sign where
-  witSign :: SignWit sign
-
-instance SignC 'Unsigned where
-  witSign = WitUnsigned
-instance SignC 'Signed where
-  witSign = WitSigned
+data Signed
+data Unsigned
 
 -- | Symbolic bit-blasted integers. Lowest-order bit is the first bit.
 --   Signed integers are represents via 2's complement with the most significant
 --   bit as the sign bit
-newtype SInteger (sign :: Sign) v = { unWrap :: SInt [SBool v] }
+newtype SBits sign v = SBits { unWrap :: [SBool v] }
 
-type SUInt v = SInteger 'Unsigned v
-type SInt  v = SInteger 'Signed v
+type SUInt v = SBits Unsigned v
+type SInt  v = SBits Signed v
 
 {---------------------------
  Utilities
  ----------------------------}
 
--- | Returns the width of an SUInt
-getWidth :: SInteger sign v -> Int
-getWidth = length
+-- | Type class for overloading setWidth
+class Extendable a where
+  setWidth :: SBits a v -> Int -> SBits a v
 
--- | Truncates or extends a symbolic uint to /n/ bits
-setWidth :: (MVar v, SignC sign) => SInteger sign v -> Int -> SInteger sign v
-setWidth (SInt xs) n = setWidth' witSign where
-  setWidth' WitUnsigned = SInt $ take n xs ++ (replicate (n - length xs) 0)
-  setWidth' WitSigned
-    | getWidth sa == 0 = SInt $ replicate n 0
-    | otherwise        = SInt $ take n xs ++ (replicate (n - length xs) $ head $ reverse xs)
+instance Extendable Unsigned where
+  setWidth (SBits xs) n = SBits $ take n xs ++ (replicate (n - length xs) 0)
+
+instance Extendable Signed where
+  setWidth (SBits xs) n = SBits $ take n xs ++ (replicate (n - length xs) sgn)
+    where sgn | length xs == 0 = 0
+              | otherwise      = head $ reverse xs
+  
+
+-- | Returns the width of an SUInt
+getWidth :: SBits sign v -> Int
+getWidth = length . unWrap
 
 -- | Turns an arbitrary integer into a symbolic int
 makeSInt :: MVar v => Integer -> SInt v
 makeSInt i
   | i < 0     = sNeg $ go (-i)
-  | otherwise = SInt $ go i
+  | otherwise = SBits $ go i
   where go 0  = []
         go i  = case i `mod` 2 of
           0 -> 0:go (i `shiftR` 1)
@@ -75,9 +72,9 @@ makeSInt i
 -- | Turns a positive integer into a symbolic uint of arbitrary length
 makeSUInt :: MVar v => Integer -> SUInt v
 makeSUInt i
-  | i == 0    = SInt $ []
+  | i == 0    = SBits $ []
   | i < 0     = error "Can't represent signed integers"
-  | otherwise = SInt $ case i `mod` 2 of
+  | otherwise = SBits $ case i `mod` 2 of
       0 -> 0:makeSUInt (i `shiftR` 1)
       1 -> 1:makeSUInt (i `shiftR` 1)
 
@@ -113,7 +110,7 @@ indicatorSum f s t = foldr (zipWith (+)) (repeat 0) $ zipWith (\l ind -> map (in
 
 -- | If-then-else
 ite :: MVar v => SBool v -> SUInt v -> SUInt v -> SUInt v
-ite p a b = 
+ite p a b
   | n /= m    = ite p (setWidth a (max n m)) (setWidth b (max n m))
   | otherwise = zipWith (\a b -> p*a + (1 + p)*b) a b
   where n = getWidth a
