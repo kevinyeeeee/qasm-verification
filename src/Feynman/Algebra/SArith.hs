@@ -1,6 +1,8 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FunctionalDependencies #-}
 
 {-|
 Module      : SArith
@@ -15,6 +17,8 @@ import Data.Maybe (isJust, fromJust)
 import Data.Bits
 import Data.List (unfoldr)
 import Data.Word
+
+import Control.Monad (liftM)
 
 import Test.QuickCheck hiding ((.&.))
 import Test.QuickCheck.Property ((==>))
@@ -33,7 +37,7 @@ data Unsigned
 -- | Symbolic bit-blasted integers. Lowest-order bit is the first bit.
 --   Signed integers are represents via 2's complement with the most significant
 --   bit as the sign bit
-newtype SBits sign v = SBits { unWrap :: [SBool v] }
+newtype SBits sign v = SBits { unWrap :: [SBool v] } deriving (Eq,Show)
 
 type SUInt v = SBits Unsigned v
 type SInt  v = SBits Signed v
@@ -42,6 +46,19 @@ type SInt  v = SBits Signed v
  Utilities
  ----------------------------}
 
+-- | Type class for things with a (symbolic) sign
+class MVar v => SignBit a v | a -> v where
+  getSign :: a -> SBool v
+
+instance MVar v => SignBit (SUInt v) v where
+  getSign _ = 0
+
+instance MVar v => SignBit (SInt v) v where
+  getSign (SBits xs)
+    | length xs == 0 = 0
+    | otherwise      = head $ reverse xs
+
+{-
 -- | Type class for overloading setWidth
 class Extendable a where
   setWidth :: SBits a v -> Int -> SBits a v
@@ -53,50 +70,72 @@ instance Extendable Signed where
   setWidth (SBits xs) n = SBits $ take n xs ++ (replicate (n - length xs) sgn)
     where sgn | length xs == 0 = 0
               | otherwise      = head $ reverse xs
-  
+-}  
 
--- | Returns the width of an SUInt
+-- | Returns the width of a symbolic int
 getWidth :: SBits sign v -> Int
 getWidth = length . unWrap
 
--- | Turns an arbitrary integer into a symbolic int
-makeSInt :: MVar v => Integer -> SInt v
-makeSInt i
-  | i < 0     = sNeg $ go (-i)
+-- | Sets the width of a symbolic int
+setWidth :: SignBit (SBits a v) v => SBits a v -> Int -> SBits a v
+setWidth b@(SBits xs) n = SBits $ take n xs ++ (replicate (n - length xs) (getSign b))
+
+-- | Unifies the length of two symbolic integers
+unifyWidth :: SignBit (SBits a v) v => SBits a v -> SBits a v -> (SBits a v, SBits a v)
+unifyWidth s t = (setWidth s n, setWidth t n) where
+  n = max (getWidth s) (getWidth t)
+
+-- | Turns an arbitrary integer into a symbolic integer in signed or unsigned representation
+--
+--   The number of bits returned is always lg i + 1. That is, whether the number is positive
+--   or negative it's returned in 2's complement, which is then either interpreted
+--   uniquely as i or i `mod` lg i + 1
+makeSymbolic :: MVar v => Integer -> SBits sign v
+makeSymbolic i
+  | i < 0     = sNeg . SBits $ go (-i)
   | otherwise = SBits $ go i
-  where go 0  = []
+  where go 0  = [0]
         go i  = case i `mod` 2 of
           0 -> 0:go (i `shiftR` 1)
           1 -> 1:go (i `shiftR` 1)
 
+-- | Turns an arbitrary integer into a symbolic int
+makeSInt :: MVar v => Integer -> SInt v
+makeSInt = makeSymbolic
+
 -- | Turns a positive integer into a symbolic uint of arbitrary length
 makeSUInt :: MVar v => Integer -> SUInt v
-makeSUInt i
-  | i == 0    = SBits $ []
-  | i < 0     = error "Can't represent signed integers"
-  | otherwise = SBits $ case i `mod` 2 of
-      0 -> 0:makeSUInt (i `shiftR` 1)
-      1 -> 1:makeSUInt (i `shiftR` 1)
+makeSUInt = makeSymbolic
+
+-- | Converts between signed and unsigned representations
+convertSign :: SBits s v -> SBits t v
+convertSign = SBits . unWrap
 
 -- | Converts a constant bit-blasted integer back to an integer
-toNat :: MVar v => SUInt v -> Maybe Integer
-toNat si = case all isConstant si of
-  True  -> Just . foldr (+) 0 . map f $ zip [0..] si
-  False -> Nothing
-  where f (i,p) = if (testFF2 $ getConstant p) then 1 `shiftL` i else 0
+fromSymbolic :: SignBit (SBits a v) v => SBits a v -> Maybe Integer
+fromSymbolic i@(SBits xs) = liftM (shiftSign . bitsToInt) $ mapM takeConstant xs where
+  takeConstant p = case isConstant p of
+    True  -> Just $ getConstant p
+    False -> Nothing
 
--- | Checks whether a symbolic uint is a constant value
-isNat :: MVar v => SUInt v -> Bool
-isNat = isJust . toNat
+  bitsToInt :: [FF2] -> Integer
+  bitsToInt bits = foldr (+) 0 $ [if testFF2 b then 1 `shiftL` i else 0 | (i,b) <- zip [0..] bits]
+
+  shiftSign :: Integer -> Integer
+  shiftSign res = if getSign i /= 0 then res - (1 `shiftL` (length xs)) else res
+
+-- | Checks whether a symbolic integer is a constant value
+isInteger :: SignBit (SBits a v) v => SBits a v -> Bool
+isInteger = isJust . fromSymbolic
 
 -- | Forces a symbolic uint to a Nat. Throws an error if it is symbolic
-forceNat :: MVar v => SUInt v -> Integer
-forceNat = fromJust . toNat
+forceInteger :: SignBit (SBits a v) v => SBits a v -> Integer
+forceInteger = fromJust . fromSymbolic
 
 -- | Given x:uint[n], generates the list of indicator polynomials:
 --    [x==0, x==1, x==2, ..., x==2^n-1]
-indicators :: MVar v => SUInt v -> [SBool v]
-indicators = f . reverse
+indicators :: MVar v => SBits a v -> [SBool v]
+indicators (SBits xs) = f $ reverse xs
   where
     f [p]    = [1 + p, p]
     f (p:ps) = map ((1+p)*) (f ps) ++ map (p*) (f ps)
@@ -105,16 +144,14 @@ indicators = f . reverse
 --    {t==0}s + {t==1}f(s) + ... + {t==i}f^i(s)[i] + ... + {t==2^n-1}(...)
 --    in other words, takes the dot product of the list of indicator polynomials with the list [f^i(s)]
 --    then sums over each index 
-indicatorSum :: MVar v => (SUInt v -> SUInt v) -> SUInt v -> SUInt v -> SUInt v
-indicatorSum f s t = foldr (zipWith (+)) (repeat 0) $ zipWith (\l ind -> map (ind*) l) (iterate f s) (indicators t)
+indicatorSum :: MVar v => (SBits a v -> SBits a v) -> SBits a v -> SBits a v -> SBits a v
+indicatorSum f s t = SBits $ foldr (zipWith (+)) (repeat 0) ind where
+  ind = zipWith (\l ind -> map (ind*) l) (map unWrap $ iterate f s) (indicators t)
 
 -- | If-then-else
-ite :: MVar v => SBool v -> SUInt v -> SUInt v -> SUInt v
-ite p a b
-  | n /= m    = ite p (setWidth a (max n m)) (setWidth b (max n m))
-  | otherwise = zipWith (\a b -> p*a + (1 + p)*b) a b
-  where n = getWidth a
-        m = getWidth b
+ite :: SignBit (SBits a v) v => SBool v -> SBits a v -> SBits a v -> SBits a v
+ite p a b = go $ unifyWidth a b where
+  go (a,b) = SBits $ zipWith (\a b -> p*a + (1 + p)*b) (unWrap a) (unWrap b)
 
 {---------------------------
  Bitwise operators
@@ -123,49 +160,50 @@ ite p a b
  ----------------------------}
 
 -- | Bitwise AND
-sAnd :: MVar v => SUInt v -> SUInt v -> SUInt v
-sAnd s t
-  | length s < length t = sAnd t s
-  | otherwise           = zipWith (*) s (t ++ repeat 0)
+sAnd :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
+sAnd s t = go $ unifyWidth s t where
+  go (SBits s, SBits t) = SBits $ zipWith (*) s (t ++ repeat 0)
 
 -- | Bitwise XOR
-sXor :: MVar v => SUInt v -> SUInt v -> SUInt v
-sXor s t
-  | length s < length t = sXor t s
-  | otherwise           = zipWith (+) s (t ++ repeat 0)
+sXor :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
+sXor s t = go $ unifyWidth s t where
+  go (SBits s, SBits t) = SBits $ zipWith (+) s (t ++ repeat 0)
 
 -- | Bitwise NOT
-sNot :: MVar v => SUInt v -> SUInt v
-sNot = map (1+)
+sNot :: MVar v => SBits a v -> SBits a v
+sNot = SBits . map (1+) . unWrap
 
 -- | Bitwise OR
-sOr :: MVar v => SUInt v -> SUInt v -> SUInt v
+sOr :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
 sOr s t = sNot $ (sNot s) `sAnd` (sNot t)
 
 -- | Bitshift left (toward higher place bits)
-sLShift :: MVar v => SUInt v -> SUInt v -> SUInt v
-sLShift = indicatorSum lshift
+sLShift :: MVar v => SBits a v -> SBits a v -> SBits a v
+sLShift = indicatorSum (SBits . lshift . unWrap)
   where
-    lshift x = 0 : init x
+    lshift x = 0 : x
 
 -- | Bitshift right (toward lower place bits)
-sRShift :: MVar v => SUInt v -> SUInt v -> SUInt v
-sRShift = indicatorSum rshift
+sRShift :: MVar v => SBits a v -> SBits a v -> SBits a v
+sRShift = indicatorSum (SBits . rshift . unWrap)
   where
     rshift (_:x) = x ++ [0]
 
-sLRot :: MVar v => SUInt v -> SUInt v -> SUInt v
-sLRot = indicatorSum lrot
+-- | Cyclic rotation left (toward higher place bits)
+sLRot :: MVar v => SBits a v -> SBits a v -> SBits a v
+sLRot = indicatorSum (SBits . lrot . unWrap)
   where
     lrot x = last x : init x
 
-sRRot :: MVar v => SUInt v -> SUInt v -> SUInt v
-sRRot = indicatorSum rrot
+-- | Cyclic rotation right (toward higher place bits)
+sRRot :: MVar v => SBits a v -> SBits a v -> SBits a v
+sRRot = indicatorSum (SBits . rrot . unWrap)
   where
     rrot (a:x) = x ++ [a]
 
-sPopcount :: MVar v => SUInt v -> SUInt v
-sPopcount s = foldl sPlus (replicate (length s) 0) $ map (\a -> [a]) $ s
+-- | Hamming weight
+sPopcount :: MVar v => SBits a v -> SBits a v
+sPopcount (SBits s) = foldl sPlus (SBits $ replicate (length s) 0) $ map (\a -> SBits [a]) $ s
 
 {---------------------------
  Arithmetic operators
@@ -176,57 +214,57 @@ sPopcount s = foldl sPlus (replicate (length s) 0) $ map (\a -> [a]) $ s
 -- | plus(x, y)[i] = x[i] + y[i] + c[i-1]
 --            c[i] = x[i] y[i] + (x[i] + y[i]) c[i-1]
 --   cast to size of first arg
-sPlus :: MVar v => SUInt v -> SUInt v -> SUInt v
-sPlus s t = unfoldr computePair start
-  where
-    start                       = (0, s, t)
-    computePair (_, []  , [])   = Nothing
-    computePair (c, x:xs, [])   = Just (c + x, (x*c, xs, []))
-    computePair (c, []  , y:ys) = Just (c + y, (y*c, [], ys))
-    computePair (c, x:xs, y:ys) = Just (c + x + y, (x * y + (x + y)*c, xs, ys))
+sPlus :: MVar v => SBits a v -> SBits a v -> SBits a v
+sPlus (SBits s) (SBits t) = SBits $ unfoldr computePair (0, s, t) where
+
+  computePair (0, []  , [])   = Nothing
+  computePair (c, []  , [])   = Just (c, (0, [], []))
+  computePair (c, x:xs, [])   = Just (c + x, (x*c, xs, []))
+  computePair (c, []  , y:ys) = Just (c + y, (y*c, [], ys))
+  computePair (c, x:xs, y:ys) = Just (c + x + y, (x * y + (x + y)*c, xs, ys))
 
 -- | Negating a number mod 2^n using 2's complement
-sNeg :: MVar v => SUInt v -> SUInt v
-sNeg s = sPlus (makeSUInt 1) (sNot s) where n = getWidth s
+sNeg :: MVar v => SBits a v -> SBits a v
+sNeg s = sPlus (makeSymbolic 1) (sNot s)
 
 -- | Subtraction mod 2^n
-sMinus :: MVar v => SUInt v -> SUInt v -> SUInt v
+sMinus :: MVar v => SBits a v -> SBits a v -> SBits a v
 sMinus s t = sPlus s (sNeg t)
 
 -- | Multiplication mod 2^n
-sMult :: MVar v => SUInt v -> SUInt v -> SUInt v
-sMult s t = foldr sPlus (makeSUInt 0) $ shifts where
-  shifts = [replicate i 0 ++ map (*p) t | (i,p) <- zip [0..] s]
+sMult :: MVar v => SBits a v -> SBits a v -> SBits a v
+sMult s t = foldr sPlus (makeSymbolic 0) $ shifts where
+  shifts = [SBits $ replicate i 0 ++ map (*p) (unWrap t) | (i,p) <- zip [0..] (unWrap s)]
 
 -- | Division mod 2^n. Performs binary long division
-sDiv :: MVar v => SUInt v -> SUInt v -> (SUInt v, SUInt v)
-sDiv s t | t == makeSUInt 0 = error "Divide by 0"
-         | otherwise        = go ([], makeSUInt 0) (n-1) where
-             n          = getWidth s
+sDiv :: SignBit (SBits a v) v => SBits a v -> SBits a v -> (SBits a v, SBits a v)
+sDiv s t | t == makeSymbolic 0 = error "Divide by 0"
+         | otherwise           = go (SBits [], makeSymbolic 0) (n-1) where
+             n             = getWidth s
              go (q,r) (-1) = (q,r)
              go (q,r) i    =
-               let r' = (s!!i):(setWidth r (n-1)) in
-                 go ((sGEq r' t):q, ite (sGEq r' t) (sMinus r' t) r') (i-1)
+               let r' = SBits $ ((unWrap s)!!i):(unWrap $ setWidth r (n-1)) in
+                 go (SBits $ (sGEq r' t):(unWrap q), ite (sGEq r' t) (sMinus r' t) r') (i-1)
 
 -- | Quotient mod 2^n
-sQuot :: MVar v => SUInt v -> SUInt v -> SUInt v
+sQuot :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
 sQuot s t = fst $ sDiv s t
 
 -- | Quotient mod 2^n
-sMod :: MVar v => SUInt v -> SUInt v -> SUInt v
+sMod :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
 sMod s t = snd $ sDiv s t
 
 -- | Power mod 2^n
-sPow :: MVar v => SUInt v -> SUInt v -> SUInt v
-sPow s t = foldr sMult (makeSUInt 1) powers where
-  powers  = map (\(s,t) -> ite t s (makeSUInt 1)) $ zip squares t
+sPow :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
+sPow s t = foldr sMult (makeSymbolic 1) powers where
+  powers  = map (\(s,t) -> ite t s (makeSymbolic 1)) $ zip squares (unWrap t)
   squares = [s] ++ [sMult x x | x <- squares]
 
 -- | Singular reduction of an integer mod M. Useful for windowed
 --   modular arithmetic when you know i is in the range [0..k*M]
 --
 --   If /s/ >= /t/, then s - t else s
-sMod1 :: MVar v => SUInt v -> SUInt v -> SUInt v
+sMod1 :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
 sMod1 s t = ite (sGEq s t) (sMinus s t) s
 
 {---------------------------
@@ -235,57 +273,74 @@ sMod1 s t = ite (sGEq s t) (sMinus s t) s
  <, <=, ==, >, >=
  ----------------------------}
 
-
-{-
-  a3 a2 a1 a0
-  b3 b2 b1 b0
-
-  a < b ==> (a3 < b3) xor ( (a3 == b3) and [a0, a1, a2] < [b0, b1, b2] )
-  truncates second argument
--}
-compByIndex :: MVar v => (SBool v -> SBool v -> SBool v) -> SUInt v -> SUInt v -> SBool v
-compByIndex f s t = go (reverse s) (reverse (setWidth t (length s)))
+-- | Applies a comparison operator by index
+--
+--   
+--   a3 a2 a1 a0
+--   b3 b2 b1 b0
+--
+--   a < b ==> (a3 < b3) xor ( (a3 == b3) and [a0, a1, a2] < [b0, b1, b2] )
+compByIndex :: SignBit (SBits a v) v => (SBool v -> SBool v -> SBool v)
+                                     -> SBits a v -> SBits a v -> SBool v
+compByIndex f s t = go . (\(s,t) -> (reverse . unWrap $ s, reverse . unWrap $ t)) $ unifyWidth s t
   where
-    go [a] [b]       = f a b
-    go (a:as) (b:bs) = f a b + (iff a b * go as bs)
-    iff p q          = 1 + p + q
+    go ([a], [b])   = f a b
+    go (a:as, b:bs) = f a b + (iff a b * go (as, bs))
+    iff p q         = 1 + p + q
 
-sLT :: MVar v => SUInt v -> SUInt v -> SBool v 
+-- | Less than
+sLT :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBool v 
 sLT = compByIndex lt
   where
     lt p q = (1+p)*q
 
-sGT :: MVar v => SUInt v -> SUInt v -> SBool v 
+-- | Greater than
+sGT :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBool v 
 sGT = compByIndex gt
   where
     gt p q = p*(1+q)
 
-sLEq :: MVar v => SUInt v -> SUInt v -> SBool v 
+-- | Less than or equal
+sLEq :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBool v 
 sLEq s t = 1 + sGT s t
 
-sGEq :: MVar v => SUInt v -> SUInt v -> SBool v 
+-- | Greater than or equal
+sGEq :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBool v 
 sGEq s t = 1 + sLT s t
 
-sEq :: MVar v => SUInt v -> SUInt v -> SBool v
-sEq s t 
-  | length s < length t = sEq t s
-  | otherwise           = foldl (*) 1 $ zipWith iff s (t ++ repeat 0)
-  where
-    iff p q = 1 + p + q
+-- | Equals
+sEq :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBool v
+sEq s t = go $ unifyWidth s t where
+  go (SBits s, SBits t) = foldl (*) 1 $ zipWith iff s (t ++ repeat 0)
+  iff p q               = 1 + p + q
 
 {---------------------------
  Testing
  ----------------------------}
 
 -- Convenience definitions for testing
+{-
 liftWord :: Word8 -> SUInt String
-liftWord i = setWidth (makeSUInt (fromIntegral i)) 8
+liftWord i = setWidth (makeSymbolic (fromIntegral i)) 8
 
 forceWord :: SUInt String -> Word8
-forceWord = fromIntegral . forceNat
+forceWord = fromIntegral . forceInteger . (flip setWidth) 8
 
 forceBool :: SBool String -> Bool
 forceBool = testFF2 . getConstant
+-}
+
+liftWord :: Int -> SInt String
+liftWord = makeSymbolic . fromIntegral
+
+forceWord :: SInt String -> Int
+forceWord = fromIntegral . forceInteger
+
+forceBool :: SBool String -> Bool
+forceBool = testFF2 . getConstant
+
+liftInt :: Integer -> SInt String
+liftInt = makeSymbolic
 
 -- dropSymbolic . liftSymbolic is the identity
 prop_SUInt_faithful a = (a >= 0) ==> a == (forceWord . liftWord $ a)
