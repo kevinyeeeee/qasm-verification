@@ -90,7 +90,7 @@ unifyWidth s t = (setWidth s n, setWidth t n) where
 --   The number of bits returned is always lg i + 1. That is, whether the number is positive
 --   or negative it's returned in 2's complement, which is then either interpreted
 --   uniquely as i or i `mod` lg i + 1
-makeSymbolic :: MVar v => Integer -> SBits sign v
+makeSymbolic :: SignBit (SBits sign v) v => Integer -> SBits sign v
 makeSymbolic i
   | i < 0     = sNeg . SBits $ go (-i)
   | otherwise = SBits $ go i
@@ -146,7 +146,7 @@ indicators (SBits xs) = f $ reverse xs
 --    then sums over each index 
 indicatorSum :: MVar v => (SBits a v -> SBits a v) -> SBits a v -> SBits a v -> SBits a v
 indicatorSum f s t = SBits $ foldr (zipWith (+)) (repeat 0) ind where
-  ind = zipWith (\l ind -> map (ind*) l) (map unWrap $ iterate f s) (indicators t)
+  ind = zipWith (\l ind -> map (ind*) l) (map unWrap $ iterate f s) (indicators t ++ repeat 0)
 
 -- | If-then-else
 ite :: SignBit (SBits a v) v => SBool v -> SBits a v -> SBits a v -> SBits a v
@@ -170,7 +170,7 @@ sXor s t = go $ unifyWidth s t where
   go (SBits s, SBits t) = SBits $ zipWith (+) s (t ++ repeat 0)
 
 -- | Bitwise NOT
-sNot :: MVar v => SBits a v -> SBits a v
+sNot :: SignBit (SBits a v) v => SBits a v -> SBits a v
 sNot = SBits . map (1+) . unWrap
 
 -- | Bitwise OR
@@ -178,31 +178,29 @@ sOr :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
 sOr s t = sNot $ (sNot s) `sAnd` (sNot t)
 
 -- | Bitshift left (toward higher place bits)
-sLShift :: MVar v => SBits a v -> SBits a v -> SBits a v
-sLShift = indicatorSum (SBits . lshift . unWrap)
-  where
-    lshift x = 0 : x
+sLShift :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
+sLShift x = foldr go x . zip [0..] . unWrap where
+  go (i,bit) x = ite bit (SBits $ replicate (1 `shiftL` i) 0 ++ (unWrap x)) x
 
 -- | Bitshift right (toward lower place bits)
-sRShift :: MVar v => SBits a v -> SBits a v -> SBits a v
-sRShift = indicatorSum (SBits . rshift . unWrap)
-  where
-    rshift (_:x) = x ++ [0]
+sRShift :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
+sRShift x = foldr go x . zip [0..] . unWrap where
+  go (i,bit) x = ite bit (SBits $ drop (1 `shiftL` i) (unWrap x) ++ [getSign x]) x
 
 -- | Cyclic rotation left (toward higher place bits)
-sLRot :: MVar v => SBits a v -> SBits a v -> SBits a v
-sLRot = indicatorSum (SBits . lrot . unWrap)
-  where
-    lrot x = last x : init x
+sLRot :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
+sLRot x = foldr go x . zip [1 `shiftL` i | i <- [0..]] . unWrap where
+  go (i,bit) x@(SBits b) = ite bit (SBits $ drop (n-i) b ++ take (n-i) b) x
+  n = getWidth x
 
 -- | Cyclic rotation right (toward higher place bits)
-sRRot :: MVar v => SBits a v -> SBits a v -> SBits a v
-sRRot = indicatorSum (SBits . rrot . unWrap)
-  where
-    rrot (a:x) = x ++ [a]
+sRRot :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
+sRRot x = foldr go x . zip [1 `shiftL` i | i <- [0..]] . unWrap where
+  go (i,bit) x@(SBits b) = ite bit (SBits $ drop i b ++ take i b) x
+  n = getWidth x
 
 -- | Hamming weight
-sPopcount :: MVar v => SBits a v -> SBits a v
+sPopcount :: SignBit (SBits a v) v => SBits a v -> SBits a v
 sPopcount (SBits s) = foldl sPlus (SBits $ replicate (length s) 0) $ map (\a -> SBits [a]) $ s
 
 {---------------------------
@@ -214,25 +212,24 @@ sPopcount (SBits s) = foldl sPlus (SBits $ replicate (length s) 0) $ map (\a -> 
 -- | plus(x, y)[i] = x[i] + y[i] + c[i-1]
 --            c[i] = x[i] y[i] + (x[i] + y[i]) c[i-1]
 --   cast to size of first arg
-sPlus :: MVar v => SBits a v -> SBits a v -> SBits a v
-sPlus (SBits s) (SBits t) = SBits $ unfoldr computePair (0, s, t) where
+sPlus :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
+sPlus s t = SBits $ go 0 $ extend $ unifyWidth s t where
+  go c (SBits [], SBits [])         = []
+  go c (SBits (x:xs), SBits (y:ys)) =
+    (c + x + y):(go (x*y + x*c + y*c) (SBits xs, SBits ys))
 
-  computePair (0, []  , [])   = Nothing
-  computePair (c, []  , [])   = Just (c, (0, [], []))
-  computePair (c, x:xs, [])   = Just (c + x, (x*c, xs, []))
-  computePair (c, []  , y:ys) = Just (c + y, (y*c, [], ys))
-  computePair (c, x:xs, y:ys) = Just (c + x + y, (x * y + (x + y)*c, xs, ys))
-
+  extend (s,t) = (setWidth s (n+1), setWidth t (n+1)) where n = getWidth s
+  
 -- | Negating a number mod 2^n using 2's complement
-sNeg :: MVar v => SBits a v -> SBits a v
-sNeg s = sPlus (makeSymbolic 1) (sNot s)
+sNeg :: SignBit (SBits a v) v => SBits a v -> SBits a v
+sNeg s = setWidth (sPlus (makeSymbolic 1) (sNot s)) (getWidth s)
 
 -- | Subtraction mod 2^n
-sMinus :: MVar v => SBits a v -> SBits a v -> SBits a v
+sMinus :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
 sMinus s t = sPlus s (sNeg t)
 
 -- | Multiplication mod 2^n
-sMult :: MVar v => SBits a v -> SBits a v -> SBits a v
+sMult :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
 sMult s t = foldr sPlus (makeSymbolic 0) $ shifts where
   shifts = [SBits $ replicate i 0 ++ map (*p) (unWrap t) | (i,p) <- zip [0..] (unWrap s)]
 
@@ -319,7 +316,6 @@ sEq s t = go $ unifyWidth s t where
  ----------------------------}
 
 -- Convenience definitions for testing
-{-
 liftWord :: Word8 -> SUInt String
 liftWord i = setWidth (makeSymbolic (fromIntegral i)) 8
 
@@ -328,87 +324,81 @@ forceWord = fromIntegral . forceInteger . (flip setWidth) 8
 
 forceBool :: SBool String -> Bool
 forceBool = testFF2 . getConstant
--}
-
-liftWord :: Int -> SInt String
-liftWord = makeSymbolic . fromIntegral
-
-forceWord :: SInt String -> Int
-forceWord = fromIntegral . forceInteger
-
-forceBool :: SBool String -> Bool
-forceBool = testFF2 . getConstant
 
 liftInt :: Integer -> SInt String
 liftInt = makeSymbolic
 
+forceInt :: SInt String -> Integer
+forceInt = forceInteger
+
 -- dropSymbolic . liftSymbolic is the identity
-prop_SUInt_faithful a = (a >= 0) ==> a == (forceWord . liftWord $ a)
+prop_SUInt_faithful a = (a >= 0) ==> a == (forceInt . liftInt $ a)
 
--- Plus commutes with liftSymbolic
-prop_sAnd_correct a b = (a >= 0) && (b >= 0) ==>
-  forceWord (sAnd (liftWord a) (liftWord b)) == a .&. b
+prop_sAnd_correct a b =
+  forceInt (sAnd (liftInt a) (liftInt b)) == a .&. b
 
-prop_sXor_correct a b = (a >= 0) && (b >= 0) ==>
-  forceWord (sXor (liftWord a) (liftWord b)) == a `xor` b
+prop_sXor_correct a b = 
+  forceInt (sXor (liftInt a) (liftInt b)) == a `xor` b
 
-prop_sOr_correct a b = (a >= 0) && (b >= 0) ==>
-  forceWord (sOr (liftWord a) (liftWord b)) == a .|. b
+prop_sOr_correct a b = 
+  forceInt (sOr (liftInt a) (liftInt b)) == a .|. b
 
--- fails for a=0
-prop_sNot_correct a = (a >= 0) ==>
-  forceWord (sNot (liftWord a)) == complement a
+prop_sNot_correct a =
+  forceInt (sNot (liftInt a)) == complement a
 
-prop_sLShift_correct a b = (a >= 0) && (b >= 0) ==>
-  forceWord (sLShift (liftWord a) (liftWord b)) == a `shiftL` (fromIntegral b)
+prop_sLShift_correct a b = (b >= 0) ==>
+  forceInt (sLShift (liftInt a) (liftInt b)) == a `shiftL` (fromIntegral b)
 
-prop_sRShift_correct a b = (a >= 0) && (b >= 0) ==>
-  forceWord (sRShift (liftWord a) (liftWord b)) == a `shiftR` (fromIntegral b)
+prop_sRShift_correct a b = (b >= 0) ==>
+  forceInt (sRShift (liftInt a) (liftInt b)) == a `shiftR` (fromIntegral b)
 
-prop_sLRot_correct a b = (a >= 0) && (b >= 0) ==>
+-- Semantics is bitwidth dependent
+prop_sLRot_correct a b = (b >= 0) ==>
   forceWord (sLRot (liftWord a) (liftWord b)) == a `rotateL` (fromIntegral b)
 
-prop_sRRot_correct a b = (a >= 0) && (b >= 0) ==>
+-- Semantics is bitwidth dependent
+prop_sRRot_correct a b = (b >= 0) ==>
   forceWord (sRRot (liftWord a) (liftWord b)) == a `rotateR` (fromIntegral b)
 
-prop_sPopcount_correct a = (a >= 0) ==>
+-- Semantics is bitwidth dependent
+prop_sPopcount_correct a =
   forceWord (sPopcount (liftWord a)) == fromIntegral (popCount a)
 
-prop_sPlus_correct a b = (a >= 0) && (b >= 0) ==>
-  forceWord (sPlus (liftWord a) (liftWord b)) == a + b
+prop_sPlus_correct a b =
+  forceInt (sPlus (liftInt a) (liftInt b)) == a + b
 
-prop_sNeg_correct a = (a >= 0) ==>
-  forceWord (sNeg (liftWord a)) == (-a)
+prop_sNeg_correct a = 
+  forceInt (sNeg (liftInt a)) == (-a)
 
-prop_sMinus_correct a b = (a >= 0) && (b >= 0) ==>
-  forceWord (sMinus (liftWord a) (liftWord b)) == a - b
+prop_sMinus_correct a b =
+  forceInt (sMinus (liftInt a) (liftInt b)) == a - b
 
-prop_sMult_correct a b = (a >= 0) && (b >= 0) ==>
-  forceWord (sMult (liftWord a) (liftWord b)) == a * b
+prop_sMult_correct a b =
+  forceInt (sMult (liftInt a) (liftInt b)) == a * b
 
-prop_sQuot_correct a b = (a >= 0) && (b > 0) ==>
-  forceWord (sQuot (liftWord a) (liftWord b)) == a `quot` b
+prop_sQuot_correct a b = 
+  forceInt (sQuot (liftInt a) (liftInt b)) == a `quot` b
 
-prop_sMod_correct a b = (a >= 0) && (b > 0) ==>
-  forceWord (sMod (liftWord a) (liftWord b)) == a `mod` b
+prop_sMod_correct a b =
+  forceInt (sMod (liftInt a) (liftInt b)) == a `mod` b
 
-prop_sPow_correct a b = (a >= 0) && (b >= 0) ==>
-  forceWord (sPow (liftWord a) (liftWord b)) == a ^ b
+prop_sPow_correct a b = (b >= 0) ==>
+  forceInt (sPow (liftInt a) (liftInt b)) == a ^ b
 
 prop_sLT_correct a b = (a >= 0) && (b >= 0) ==>
-  forceBool (sLT (liftWord a) (liftWord b)) == (a < b)
+  forceBool (sLT (liftInt a) (liftInt b)) == (a < b)
 
 prop_sLEq_correct a b = (a >= 0) && (b >= 0) ==>
-  forceBool (sLEq (liftWord a) (liftWord b)) == (a <= b)
+  forceBool (sLEq (liftInt a) (liftInt b)) == (a <= b)
 
 prop_sGT_correct a b = (a >= 0) && (b >= 0) ==>
-  forceBool (sGT (liftWord a) (liftWord b)) == (a > b)
+  forceBool (sGT (liftInt a) (liftInt b)) == (a > b)
 
 prop_sGEq_correct a b = (a >= 0) && (b >= 0) ==>
-  forceBool (sGEq (liftWord a) (liftWord b)) == (a >= b)
+  forceBool (sGEq (liftInt a) (liftInt b)) == (a >= b)
 
 prop_sEq_correct a b = (a >= 0) && (b >= 0) ==>
-  forceBool (sEq (liftWord a) (liftWord b)) == (a == b)
+  forceBool (sEq (liftInt a) (liftInt b)) == (a == b)
 
 tests :: () -> IO ()
 tests _ = do
