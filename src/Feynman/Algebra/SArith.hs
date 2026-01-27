@@ -1,3 +1,4 @@
+{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -42,21 +43,54 @@ newtype SBits sign v = SBits { unWrap :: [SBool v] } deriving (Eq,Show)
 type SUInt v = SBits Unsigned v
 type SInt  v = SBits Signed v
 
+instance SignBit (SBits sign v) v => Num (SBits sign v) where
+  (+) = sPlus
+  (*) = sMult
+  negate = sNeg
+  abs = sAbs
+  signum = SBits . (:[]) . getSign
+  fromInteger = makeSymbolic
+
+instance SignBit (SBits sign v) v => Bits (SBits sign v) where
+  (.&.) = sAnd
+  (.|.) = sOr
+  xor   = sXor
+  complement = sNot
+  shift a b = case b > 0 of
+    True -> sLShift a (makeSymbolic $ toInteger b)
+    True -> sRShift a (makeSymbolic $ toInteger (-b))
+  rotate a b = case b > 0 of
+    True -> sLRot a (makeSymbolic $ toInteger b)
+    True -> sRRot a (makeSymbolic $ toInteger (-b))
+  bitSize = getWidth
+  bitSizeMaybe = Just . bitSize
+  isSigned = isSign
+  testBit = error "Unimplemented"
+  bit     = error "Unimplemented"
+
 {---------------------------
  Utilities
  ----------------------------}
 
 -- | Type class for things with a (symbolic) sign
 class MVar v => SignBit a v | a -> v where
-  getSign :: a -> SBool v
+  isSign  :: a -> Bool
+  getSign ::  a -> SBool v
+  setSign ::  SBool v -> a -> a
 
 instance MVar v => SignBit (SUInt v) v where
+  isSign  _ = False
   getSign _ = 0
+  setSign _ = id
 
 instance MVar v => SignBit (SInt v) v where
+  isSign  _ = True
   getSign (SBits xs)
     | length xs == 0 = 0
     | otherwise      = head $ reverse xs
+  setSign s (SBits xs)
+    | length xs == 0 = SBits []
+    | otherwise      = SBits . reverse $ s:(tail $ reverse xs)
 
 {-
 -- | Type class for overloading setWidth
@@ -241,7 +275,7 @@ sMult s t = foldr (\a -> (flip setWidth) (2*n) . sPlus a) (makeSymbolic 0) $ shi
   shift i p = take (2*n) $ replicate i 0 ++ (map (*p) (unWrap t'))
   shifts    = [SBits $ shift i p |  (i,p) <- zip [0..] (unWrap s')]
 
--- | Division mod 2^n. Performs binary long division
+-- | Division mod 2^n. Performs (unsigned) binary long division
 sDiv :: SignBit (SBits a v) v => SBits a v -> SBits a v -> (SBits a v, SBits a v)
 sDiv s t | all (== 0) (unWrap t) = error "Divide by 0"
          | otherwise             = go (SBits [], makeSymbolic 0) (n-1) where
@@ -253,11 +287,17 @@ sDiv s t | all (== 0) (unWrap t) = error "Divide by 0"
 
 -- | Quotient mod 2^n
 sQuot :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
-sQuot s t = fst $ sDiv s t
+sQuot s t = ite (getSign s' + getSign t') (sNeg res) res where
+  res     = setWidth (fst $ sDiv (sAbs s') (sAbs t')) n
+  (s',t') = unifyWidth s t
+  n       = getWidth s'
 
--- | Quotient mod 2^n
+-- | Remainder mod 2^n
 sMod :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
-sMod s t = snd $ sDiv s t
+sMod s t = ite (getSign t') (sNeg res) res where
+  res     = setWidth (snd $ sDiv (sAbs s') (sAbs t')) n
+  (s',t') = unifyWidth s t
+  n       = getWidth s'
 
 -- | Power mod 2^n
 sPow :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
@@ -394,9 +434,10 @@ prop_sMinus_correct a b =
 prop_sMult_correct a b =
   forceInt (sMult (liftInt a) (liftInt b)) == a * b
 
-prop_sQuot_correct a b = (a >= 0) && (b > 0) ==>
+prop_sQuot_correct a b = (b /= 0) ==>
   forceInt (sQuot (liftInt a) (liftInt b)) == a `quot` b
 
+-- Haskell implements euclidean modulus, not truncated (C) semantics
 prop_sMod_correct a b = (a >= 0) && (b > 0) ==>
   forceInt (sMod (liftInt a) (liftInt b)) == a `mod` b
 
