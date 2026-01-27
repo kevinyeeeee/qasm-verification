@@ -206,7 +206,7 @@ sPopcount (SBits s) = foldl sPlus (SBits $ replicate (length s) 0) $ map (\a -> 
 {---------------------------
  Arithmetic operators
 
- Plus, Minus, Neg, Times, Div, Mod, Pow
+ Plus, Minus, Neg, Abs, Times, Div, Mod, Pow
  ----------------------------}
 
 -- | plus(x, y)[i] = x[i] + y[i] + c[i-1]
@@ -224,19 +224,27 @@ sPlus s t = SBits $ go 0 $ extend $ unifyWidth s t where
 sNeg :: SignBit (SBits a v) v => SBits a v -> SBits a v
 sNeg s = setWidth (sPlus (makeSymbolic 1) (sNot s)) (getWidth s)
 
+-- | Absolute value of a number
+sAbs :: SignBit (SBits a v) v => SBits a v -> SBits a v
+sAbs s = ite (getSign s) (sNeg s) s
+
 -- | Subtraction mod 2^n
 sMinus :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
 sMinus s t = sPlus s (sNeg t)
 
 -- | Multiplication mod 2^n
 sMult :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
-sMult s t = foldr sPlus (makeSymbolic 0) $ shifts where
-  shifts = [SBits $ replicate i 0 ++ map (*p) (unWrap t) | (i,p) <- zip [0..] (unWrap s)]
+sMult s t = foldr (\a -> (flip setWidth) (2*n) . sPlus a) (makeSymbolic 0) $ shifts where
+  n  = max (getWidth s) (getWidth t)
+  s' = setWidth s (2*n)
+  t' = setWidth t (2*n)
+  shift i p = take (2*n) $ replicate i 0 ++ (map (*p) (unWrap t'))
+  shifts    = [SBits $ shift i p |  (i,p) <- zip [0..] (unWrap s')]
 
 -- | Division mod 2^n. Performs binary long division
 sDiv :: SignBit (SBits a v) v => SBits a v -> SBits a v -> (SBits a v, SBits a v)
-sDiv s t | t == makeSymbolic 0 = error "Divide by 0"
-         | otherwise           = go (SBits [], makeSymbolic 0) (n-1) where
+sDiv s t | all (== 0) (unWrap t) = error "Divide by 0"
+         | otherwise             = go (SBits [], makeSymbolic 0) (n-1) where
              n             = getWidth s
              go (q,r) (-1) = (q,r)
              go (q,r) i    =
@@ -257,6 +265,14 @@ sPow s t = foldr sMult (makeSymbolic 1) powers where
   powers  = map (\(s,t) -> ite t s (makeSymbolic 1)) $ zip squares (unWrap t)
   squares = [s] ++ [sMult x x | x <- squares]
 
+-- | Power mod 2^n. Fixed bit-width version
+sPow' :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
+sPow' s t = foldr sMult' (makeSymbolic 1) powers where
+  powers     = map (\(s,t) -> ite t s (makeSymbolic 1)) $ zip squares (unWrap t)
+  squares    = [s] ++ [sMult' x x | x <- squares]
+  n          = getWidth s
+  sMult' a b = setWidth (sMult a b) n
+
 -- | Singular reduction of an integer mod M. Useful for windowed
 --   modular arithmetic when you know i is in the range [0..k*M]
 --
@@ -271,30 +287,29 @@ sMod1 s t = ite (sGEq s t) (sMinus s t) s
  ----------------------------}
 
 -- | Applies a comparison operator by index
---
---   
---   a3 a2 a1 a0
---   b3 b2 b1 b0
---
---   a < b ==> (a3 < b3) xor ( (a3 == b3) and [a0, a1, a2] < [b0, b1, b2] )
 compByIndex :: SignBit (SBits a v) v => (SBool v -> SBool v -> SBool v)
                                      -> SBits a v -> SBits a v -> SBool v
-compByIndex f s t = go . (\(s,t) -> (reverse . unWrap $ s, reverse . unWrap $ t)) $ unifyWidth s t
+compByIndex f s t = go . revUnwrap $ unifyWidth s t
   where
+    revUnwrap (s,t) = (reverse . unWrap $ s, reverse . unWrap $ t)
     go ([a], [b])   = f a b
     go (a:as, b:bs) = f a b + (iff a b * go (as, bs))
     iff p q         = 1 + p + q
 
 -- | Less than
 sLT :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBool v 
-sLT = compByIndex lt
+sLT a b = ltSgn + (1+gtSgn)*(compByIndex lt a b)
   where
+    ltSgn  = (getSign a)*(1 + getSign b)
+    gtSgn  = (1 + getSign a)*(getSign b)
     lt p q = (1+p)*q
 
 -- | Greater than
 sGT :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBool v 
-sGT = compByIndex gt
+sGT a b = gtSgn + (1+ltSgn)*(compByIndex gt a b)
   where
+    ltSgn  = (getSign a)*(1 + getSign b)
+    gtSgn  = (1 + getSign a)*(getSign b)
     gt p q = p*(1+q)
 
 -- | Less than or equal
@@ -370,34 +385,41 @@ prop_sPlus_correct a b =
 prop_sNeg_correct a = 
   forceInt (sNeg (liftInt a)) == (-a)
 
+prop_sAbs_correct a = 
+  forceInt (sAbs (liftInt a)) == abs a
+
 prop_sMinus_correct a b =
   forceInt (sMinus (liftInt a) (liftInt b)) == a - b
 
 prop_sMult_correct a b =
   forceInt (sMult (liftInt a) (liftInt b)) == a * b
 
-prop_sQuot_correct a b = 
+prop_sQuot_correct a b = (a >= 0) && (b > 0) ==>
   forceInt (sQuot (liftInt a) (liftInt b)) == a `quot` b
 
-prop_sMod_correct a b =
+prop_sMod_correct a b = (a >= 0) && (b > 0) ==>
   forceInt (sMod (liftInt a) (liftInt b)) == a `mod` b
 
-prop_sPow_correct a b = (b >= 0) ==>
+prop_sPow_correct a b = (abs a < 256) && (b >= 0) && (b < 8) ==>
   forceInt (sPow (liftInt a) (liftInt b)) == a ^ b
 
-prop_sLT_correct a b = (a >= 0) && (b >= 0) ==>
+-- Semantics is bitwidth dependent
+prop_sPow'_correct a b = (b >= 0) ==>
+  forceWord (sPow' (liftWord a) (liftWord b)) == a ^ b
+
+prop_sLT_correct a b =
   forceBool (sLT (liftInt a) (liftInt b)) == (a < b)
 
-prop_sLEq_correct a b = (a >= 0) && (b >= 0) ==>
+prop_sLEq_correct a b =
   forceBool (sLEq (liftInt a) (liftInt b)) == (a <= b)
 
-prop_sGT_correct a b = (a >= 0) && (b >= 0) ==>
+prop_sGT_correct a b =
   forceBool (sGT (liftInt a) (liftInt b)) == (a > b)
 
-prop_sGEq_correct a b = (a >= 0) && (b >= 0) ==>
+prop_sGEq_correct a b =
   forceBool (sGEq (liftInt a) (liftInt b)) == (a >= b)
 
-prop_sEq_correct a b = (a >= 0) && (b >= 0) ==>
+prop_sEq_correct a b =
   forceBool (sEq (liftInt a) (liftInt b)) == (a == b)
 
 tests :: () -> IO ()
@@ -418,7 +440,7 @@ tests _ = do
   quickCheck $ prop_sMult_correct
   quickCheck $ prop_sQuot_correct
   quickCheck $ prop_sMod_correct
-  quickCheck $ prop_sPow_correct
+  quickCheck $ prop_sPow'_correct
   quickCheck $ prop_sLT_correct
   quickCheck $ prop_sLEq_correct
   quickCheck $ prop_sGT_correct
