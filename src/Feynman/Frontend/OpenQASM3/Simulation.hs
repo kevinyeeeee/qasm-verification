@@ -756,7 +756,14 @@ evalBra path = dens . simA $ path
 
 simKet :: Maybe Int -> Expr ElaboratedType -> State Env (Pathsum DMod2)
 simKet n expr = case expr of
-  Tensor _ e1 e2          -> liftM2 (<>) (simKet Nothing e1) (simKet Nothing e2)
+  Tensor _ e1 e2          -> 
+    case typeof e1 of
+      TBool -> do
+        pp <- exprToSBV e1
+        k <- simKet n e2
+        let pred = Pathsum 0 0 0 0 (lift $ ofVar (FVar "%%%") * (1+pp) ) []
+        return $ sumover ["%%%"] (pred <> k)
+      _ -> liftM2 (<>) (simKet Nothing e1) (simKet Nothing e2)
   Sum _ svars e           -> do
     let (ids, typs) = unzip svars
     typs <- mapM (traverse $ typeExprToType) typs

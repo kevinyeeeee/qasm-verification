@@ -753,7 +753,8 @@ tcExpr expr0 = case expr0 of
           (TFloat _, TQReg m) -> TQReg m
           (TQBit   , TFloat _) -> TQBit
           (TQReg m , TFloat _) -> TQReg m
-          (t, s) -> error $ show t ++ " -- " ++ show expr2
+          (TBool   , t      ) -> t
+          (t, s) -> error $ show t ++ " -- " ++ show expr1 ++ " otimes " ++ show expr2
     return $ Tensor (pureType ty) expr1 expr2
 
     -- let (ids,types) = unzip params
