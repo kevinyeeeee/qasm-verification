@@ -266,6 +266,10 @@ compute xs = Pathsum 0 (Set.size fv) (length xs) 0 0 $ map (rename sub) xs
   where fv  = Set.unions $ map vars xs
         sub = ((Map.fromList [(v, IVar i) | (v, i) <- zip (Set.toList fv) [0..]])!)
 
+-- | Assigns a qubit by mapping |x> -> |p>
+overwrite :: (Eq g, Num g) => [SBool Var] -> Pathsum g
+overwrite xs = Pathsum 0 n n 0 0 xs where n = length xs
+
 -- | Breaks the connection between inputs and outputs by mapping
 --   any input basis state to the maximally mixed state. Non-unitary
 disconnect :: (Eq g, Num g) => Int -> Pathsum g
@@ -382,6 +386,10 @@ unitsum = Pathsum 1 0 0 1 ((-constant (half * half)) + distribute half (ofVar (P
 {----------------------------
  Matrices
  ----------------------------}
+
+-- | Global phase gate
+globalPhase :: (Eq g, Num g) => g -> Pathsum g
+globalPhase t = Pathsum 0 0 0 0 (constant t) []
 
 -- | X gate
 xgate :: (Eq g, Num g) => Pathsum g
@@ -640,6 +648,13 @@ measureGate = Pathsum 2 2 2 1 (lift $ y * (x0 + x1)) [x0, x1]
         x1 = ofVar $ IVar 1
         y  = ofVar $ PVar 0
 
+-- | Choi matrix of reset
+resetGate :: (Eq g, Abelian g) => Pathsum g
+resetGate = Pathsum 2 2 2 1 (lift $ y * (x0 + x1)) [0, 0]
+  where x0 = ofVar $ IVar 0
+        x1 = ofVar $ IVar 1
+        y  = ofVar $ PVar 0
+
 -- | Applicative version of the Choi matrix.
 --
 --   Requires the index of the corresponding input and output
@@ -820,6 +835,12 @@ controlled sop = go $ rebalance sop where
       in
         foldr (+) cnst tms
 
+-- | Construct a negatively controlled path sum
+negControlled :: (Eq g, Abelian g, Dyadic g) => Pathsum g -> Pathsum g
+negControlled sop = xgate <> (identity n) .> controlled sop .> xgate <> (identity m) where
+  n = inDeg sop
+  m = outDeg sop
+
 -- | Rebalances a sum over \(Z_{2^k}\) so that the normalization factor is \(sqrt{2}^{-k}\)
 rebalance :: (Eq g, Abelian g, Dyadic g) => Pathsum g -> Pathsum g
 rebalance sop@(Pathsum a _ _ d _ _)
@@ -939,6 +960,8 @@ applyControlled g ctrl xs sop
 
 -- | Apply a pathsum controlled on a predicate
 applyPControlled :: (Eq g, Abelian g, Dyadic g) => Pathsum g -> SBool Var -> [Int] -> Pathsum g -> Pathsum g
+applyPControlled g 0 xs sop = sop
+applyPControlled g 1 xs sop = applyOn g xs sop
 applyPControlled g pred xs sop = discard (outDeg sop) $ controlledG where
   controlledG = applyControlled g (outDeg sop) xs sop'
   sop'        = sop { outDeg = outDeg sop + 1, outVals = outVals sop ++ [pred] }
