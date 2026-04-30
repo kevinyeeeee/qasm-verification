@@ -16,6 +16,7 @@ import Data.Functor.Identity (Identity)
 
 import Data.Complex
 import Data.Maybe (fromJust)
+import Data.Bits
 
 import Control.Monad.State.Strict hiding (lift)
 
@@ -136,12 +137,26 @@ valueOfBinding b = case b of
   _ -> error "Value of block or gate binding"
 
 -- | Dereferences a value
-indexValue :: Value -> Int -> Value
-indexValue v idx = case v of
-  VInt i          -> (i >> idx) `mod` 2
-  VQReg start len -> if idx < len then start + idx else error "Out of bounds array access"
-  VCReg start len -> if idx < len then start + idx else error "Out of bounds array access"
-  VPolyList xs    -> if idx < length xs then xs!!idx else error "Out of bounds array access"
+deref :: Value -> Integer -> Value
+deref v idx = case v of
+
+  VInt i          -> VBool $ ((i `shiftR` (fromInteger idx)) `mod` 2) == 1
+
+  VQReg start len -> if idx < len then
+                       VQBit (start + idx)
+                     else
+                       error "Out of bounds array access"
+
+  VCReg start len -> if idx < len then
+                       VCBit (start + idx)
+                     else
+                       error "Out of bounds array access"
+
+  VPolyList xs    -> if idx < toInteger (length xs) then
+                       VPoly (xs!!(fromInteger idx))
+                     else
+                       error "Out of bounds array access"
+
   _               -> error "Unexpected: value is not indexable"
 
 -- | Assigns a scalar to a new value. Note that only locals can be modified
@@ -171,6 +186,24 @@ assignSymbolic p ty offset v = case (ty, v) of
           ps = applyPControlled (overwrite xs) p [idx..idx+length xs] $ pathsum env
       in
         env { pathsum = ps }
+
+-- | Binds parameters of a function
+bindParams :: [(ID, Type)] -> [Value] -> Simulator ()
+bindParams params args = mapM_ go $ zip params args where
+  go ((id,ty),val) = case (ty,val) of
+    (TBool  , VCBit loc)     -> bindVar id (Symbolic ty loc)
+    (TCReg i, VCReg loc len) -> bindVar id (Symbolic ty loc)
+    (TQBit,   VQBit loc)     -> bindVar id (Symbolic ty loc)
+    (TQReg i, VQReg loc len) -> bindVar id (Symbolic ty loc)
+    (TBool,   VBool _)       -> bindVar id (Scalar ty val)
+    (TUInt i, VInt j)        -> bindVar id (Scalar ty val)
+    (TUInt i, VPoly j)       -> error "unimplemented"
+    (TInt i,  VInt j)        -> bindVar id (Scalar ty val)
+    (TInt i,  VPoly j)       -> error "unimplemented"
+    (TAngle i, VFloat j)     -> bindVar id (Scalar ty val)
+    (TFloat i, VFloat j)     -> bindVar id (Scalar ty val)
+    (TCmplx i, VCmplx j)     -> bindVar id (Scalar ty val)
+    
 
 -- | Gives the unicode representation of the ith offset of v
 fvar :: ID -> Integer -> String
@@ -297,7 +330,7 @@ castValue (EType ty _ _) val = case (ty, val) of
   _ -> val
 
 -- | Gets the integer value of an index
-idxOfValue :: Value -> Int
+idxOfValue :: Value -> Integer
 idxOfValue (VInt i) = i
 idxOfValue _ = error "Non-integral index value"
 
@@ -357,17 +390,20 @@ evalAP p ap = case ap of
   AVar _ vid -> do
     binding <- searchBinding vid
     case binding of
-      Nothing -> error "No binding for variable " ++ show id
+      Nothing -> error $ "No binding for variable " ++ show vid
       Just b  -> return $ valueOfBinding b
 
   AIndex _ vid idx -> do
     binding <- searchBinding vid
     i <- liftM idxOfValue $ evalExpr p idx
     case binding of
-      Nothing -> error "No binding for variable " ++ show id
-      Just b -> indexValue (valueOfBinding b) idx
+      Nothing -> error $ "No binding for variable " ++ show vid
+      Just b  -> return $ deref (valueOfBinding b) i
 
-  _          -> error "unimplemented"
+  -- deprecated
+  AList _ aps -> do
+    aps' <- mapM (evalAP p) aps
+    return $ VList aps'
 
 -- | Evaluates an expression
 evalExpr :: SBool Var -> Expr ElaboratedType -> Simulator Value
@@ -457,12 +493,14 @@ evalExpr p expr = case expr of
     args'   <- mapM (evalExpr p) args
     case binding of
       Just (Block _ _ Nothing _ (Just summary)) -> applyBlock p args' summary >> return VUnit
-      Just (Block _ params ret body _)          -> error "unimplemented" --do
-       -- openScope
-       -- bindParams params args'
-       -- ret <- simStmt p body
-       -- closeScope
-       -- return ret
+      Just (Block _ params ret body _)          -> do
+        openScope
+        bindParams params args'
+        ret <- simStmt p body
+        closeScope
+        case ret of
+          Nothing -> return VUnit
+          Just v  -> return v
 
   _ -> error $ show expr
 

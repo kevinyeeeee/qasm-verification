@@ -178,7 +178,7 @@ isIndexable typ = case typ of
 -- | Access paths. Either a variable or an index into a register/bit array
 data AccessPath a = AVar a ID
                   | AIndex a ID (Expr a)
-                  | AList a [AccessPath a]
+                  | AList a [AccessPath a] -- deprecated
                   deriving (Eq, Show)
 
 instance Annotated AccessPath where
