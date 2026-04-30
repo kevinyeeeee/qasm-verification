@@ -85,6 +85,38 @@ data Value =
   | VUnit
   deriving (Show)
 
+{- Redesigned value types -}
+
+{-
+
+data SimInteger = KnownI Integer   | SymbolicI [SBool Var]
+data SimUInteger = KnownUI Integer | SymbolicUI [SBool Var]
+data SimBool = KnownBool Bool      | SymbolicBool Bool
+
+data Value =
+    VUnit
+  | VLoc Integer
+  | VInt SimInteger
+  | VUInt SimUInteger
+  | VBool SimBool
+  | VList [Value]
+  | VFloat Double
+  | VCmplx (Complex Double)
+  | VProc { typ :: Type,
+            params :: [(ID, Type)],
+            returns :: Maybe Type
+            body :: Stmt ElaboratedType,
+            summary :: Maybe (Pathsum DMod2) }
+  deriving (Show)
+
+-- | Allocates space on the quantum or classical heap
+alloc :: Bool -> Int -> Simulator Int
+alloc isQ size = modify go where
+  go env = case isQ of
+    True -> 
+
+-}
+
 {-----------------------------
  Environmental utilities
  -----------------------------}
