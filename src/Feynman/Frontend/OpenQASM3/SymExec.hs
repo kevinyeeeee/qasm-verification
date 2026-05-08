@@ -546,7 +546,26 @@ evalBop _ _ _ = error "Unimplemented"
 
 -- | Simulates a declaration
 simDecl :: Decl ElaboratedType -> Simulator ()
-simDecl _ = error "Unimplemented"
+simDecl decl = case decl of
+
+  DVar vid typ maybeExpr True -> do
+      e <- evalExpr 1 $ fromJust maybeExpr
+      typ <- evalType typ
+      bindGlobal vid (Scalar typ e)
+
+  DVar vid typ maybeExpr False -> error "unimplemented"
+
+  DDef did dparams dreturns dbody -> do
+    dreturns' <- mapM evalType dreturns
+    dparams' <- traverse (\(a, x) -> (,) a <$> evalType x) dparams
+    bindGlobal did (Block TUnit dparams' dreturns' dbody Nothing)
+
+  DGate gid gparams gqargs gbody ->
+    bindGlobal gid (Gate TUnit gparams gqargs gbody Nothing)
+
+  DExtern _ _ _ -> error "TODO"
+
+  DAlias  _ _   -> error "TODO"
 
 -- | Simulate a statement
 simStmt :: SBool Var -> Stmt ElaboratedType -> Simulator (Maybe Value)
