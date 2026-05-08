@@ -294,7 +294,7 @@ sQuot s t = ite (getSign s' + getSign t') (sNeg res) res where
 
 -- | Remainder mod 2^n
 sMod :: SignBit (SBits a v) v => SBits a v -> SBits a v -> SBits a v
-sMod s t = ite (getSign t') (sNeg res) res where
+sMod s t = ite (getSign s') (sNeg res) res where
   res     = setWidth (snd $ sDiv (sAbs s') (sAbs t')) n
   (s',t') = unifyWidth s t
   n       = getWidth s'
@@ -434,12 +434,20 @@ prop_sMinus_correct a b =
 prop_sMult_correct a b =
   forceInt (sMult (liftInt a) (liftInt b)) == a * b
 
+-- quot/rem are truncated C-style semantics
 prop_sQuot_correct a b = (b /= 0) ==>
   forceInt (sQuot (liftInt a) (liftInt b)) == a `quot` b
 
--- Haskell implements euclidean modulus, not truncated (C) semantics
-prop_sMod_correct a b = (a >= 0) && (b > 0) ==>
+prop_sRem_correct a b = (b /= 0) ==>
+  forceInt (sMod (liftInt a) (liftInt b)) == a `rem` b
+
+-- Euclidean div/mod, these fail
+prop_sDiv_correct a b = (b /= 0) ==>
+  forceInt (sQuot (liftInt a) (liftInt b)) == a `div` b
+
+prop_sMod_correct a b = (b /= 0) ==>
   forceInt (sMod (liftInt a) (liftInt b)) == a `mod` b
+
 
 prop_sPow_correct a b = (abs a < 256) && (b >= 0) && (b < 8) ==>
   forceInt (sPow (liftInt a) (liftInt b)) == a ^ b
@@ -480,7 +488,7 @@ tests _ = do
   quickCheck $ prop_sMinus_correct
   quickCheck $ prop_sMult_correct
   quickCheck $ prop_sQuot_correct
-  quickCheck $ prop_sMod_correct
+  quickCheck $ prop_sRem_correct
   quickCheck $ prop_sPow'_correct
   quickCheck $ prop_sLT_correct
   quickCheck $ prop_sLEq_correct
