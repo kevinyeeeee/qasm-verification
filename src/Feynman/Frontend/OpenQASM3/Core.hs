@@ -376,7 +376,7 @@ prettyPrintExpr expr = case expr of
   EBits _ xs -> "\"" ++ concatMap (\b -> if b then "1" else "0") xs ++ "\""
   EFloat _ r -> show r
   ECmplx _ c -> show c
-  ESlice _ init step end -> "[" ++ prettyPrintExpr init ++ ":" ++ s ++ prettyPrintExpr end ++ "]"
+  ESlice _ init step end -> prettyPrintExpr init ++ ":" ++ s ++ prettyPrintExpr end
     where s = maybe "" (\e -> prettyPrintExpr e ++ ":") step
   ESet _ exprs -> "{" ++ intercalate "," (map prettyPrintExpr exprs) ++ "}"
   EPi _ -> "pi"
@@ -590,19 +590,29 @@ translateAccessPath node = case node of
 
   S.Node (S.Identifier id _) [] c -> return $ AVar c id
 
-  S.Node S.IndexedIdentifier [idnode, idxlist] c -> do
+  S.Node S.IndexedIdentifier [idnode, (S.Node S.List f c')] c -> do
     id   <- translateIdent idnode
-    idxs <- inLst translateExpr idxlist
+    idxs <- inLst translateExpr (S.Node S.List f c')
     case idxs of
       [idx] -> return $ AIndex c id idx
       _     -> Left (Err "Array types unsupported")
 
-  S.Node S.IndexExpr [idnode, idxlist] c -> do
+  S.Node S.IndexedIdentifier [idnode, idxset] c -> do
+    id  <- translateIdent idnode
+    idx <- translateExpr idxset
+    return $ AIndex c id idx
+
+  S.Node S.IndexExpr [idnode, (S.Node S.List f c')] c -> do
     id   <- translateIdent idnode
-    idxs <- inLst translateExpr idxlist
+    idxs <- inLst translateExpr (S.Node S.List f c')
     case idxs of
       [idx] -> return $ AIndex c id idx
       _     -> Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Multiple indices unsupported")
+
+  S.Node S.IndexExpr [idnode, idxset] c -> do
+    id  <- translateIdent idnode
+    idx <- translateExpr idxset
+    return $ AIndex c id idx
 
   _  -> Left (Err $ "Fatal: malformed access path node (" ++ show node ++ ")")
 
@@ -611,12 +621,17 @@ translateExpr :: S.ParseNode -> Either ErrMsg (Expr Location)
 translateExpr node = case node of
   S.Node S.ParenExpr [exprnode] c -> translateExpr exprnode
 
-  S.Node S.IndexExpr [exprnode, idxnode] c -> do
+  S.Node S.IndexExpr [exprnode, (S.Node S.List f c')] c -> do
     expr <- translateExpr exprnode
-    idxs  <- inLst translateExpr idxnode
+    idxs  <- inLst translateExpr (S.Node S.List f c')
     case idxs of
       [idx] -> return $ EIndex c expr idx
       _     -> Left (Err $ "Error at " ++ (S.pp_source c) ++ ": Multiple indices unsupported")
+
+  S.Node S.IndexExpr [exprnode, idxset] c -> do
+    expr <- translateExpr exprnode
+    idx  <- translateExpr idxset
+    return $ EIndex c expr idx
 
   S.Node (S.UnaryOperatorExpr uop) [exprnode] c -> do
     op   <- translateUOp uop
