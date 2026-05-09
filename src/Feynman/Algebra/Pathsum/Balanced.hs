@@ -388,8 +388,8 @@ unitsum = Pathsum 1 0 0 1 ((-constant (half * half)) + distribute half (ofVar (P
  ----------------------------}
 
 -- | Global phase gate
-globalPhase :: (Eq g, Num g) => g -> Pathsum g
-globalPhase t = Pathsum 0 0 0 0 (constant t) []
+gPhase :: (Eq g, Num g) => g -> Pathsum g
+gPhase t = Pathsum 0 0 0 0 (constant t) []
 
 -- | X gate
 xgate :: (Eq g, Num g) => Pathsum g
