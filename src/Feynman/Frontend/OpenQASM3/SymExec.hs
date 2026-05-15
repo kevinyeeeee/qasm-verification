@@ -30,7 +30,7 @@ import Feynman.Algebra.Polynomial.Multilinear
 import Feynman.Algebra.SArith2
 
 import Feynman.Frontend.OpenQASM3.Core
-import Feynman.Frontend.OpenQASM3.TypeCheck hiding (Env, isConstant, openProcScope)
+import Feynman.Frontend.OpenQASM3.TypeCheck hiding (Env, isConstant, openProcScope, initEnv)
 
 import qualified Feynman.Util.Unicode as U
 
@@ -734,3 +734,18 @@ simStmt p stmt = case stmt of
   SReturn _ (Just e)         -> liftM Just $ evalExpr p e
   SReturn _ Nothing          -> return $ Just VUnit
   SExpr _ expr               -> evalExpr p expr >> return Nothing
+
+-- | Simulates a program
+simProg :: Prog ElaboratedType -> Simulator (Maybe Value)
+simProg (Prog _ stmts) =
+  foldM (\m s -> (liftM $ mplus m) $ simStmt 1 s) Nothing stmts
+
+{-----------------------------
+ Testing
+ -----------------------------}
+
+-- | Convenience definition for testing
+simulate :: Prog ElaboratedType -> IO ()
+simulate prog = do
+  let (_,env) = runState (simProg prog) initEnv
+  print env

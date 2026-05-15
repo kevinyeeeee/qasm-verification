@@ -39,6 +39,7 @@ library
                        Feynman.Algebra.Polynomial.Multilinear.Groebner
                        Feynman.Algebra.Pathsum.Balanced,
                        Feynman.Algebra.SArith
+                       Feynman.Algebra.SArith2
 
                        Feynman.Synthesis.Phase,
                        Feynman.Synthesis.Reversible,
@@ -63,6 +64,7 @@ library
                        Feynman.Frontend.OpenQASM3.Lexer
                        Feynman.Frontend.OpenQASM3.Parser
                        Feynman.Frontend.OpenQASM3.Simulation
+                       Feynman.Frontend.OpenQASM3.SymExec
                        Feynman.Frontend.OpenQASM3.Syntax
                        Feynman.Frontend.OpenQASM3.Utils
                        Feynman.Frontend.OpenQASM3.Core
@@ -206,6 +208,18 @@ executable hs
 
 executable tcqasm
   main-is:             TcQASM.hs
+  buildable:           True
+  ghc-options:         -O2
+  hs-source-dirs:      tools
+  build-depends:       Feynman,
+                       base,
+                       mtl,
+                       containers >= 0.6.3.1,
+                       QuickCheck >= 2.8.2
+  default-language:    Haskell2010
+
+executable simqasm
+  main-is:             SimQASM.hs
   buildable:           True
   ghc-options:         -O2
   hs-source-dirs:      tools
