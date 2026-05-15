@@ -17,6 +17,7 @@ tcFile src = case QASM3Parser.parseString src of
       Right prog -> case tcQasm prog of
         Left errors -> printErrors errors
         Right prog  -> do
+          mapM_ putStrLn $ prettyPrint prog
           env <- simProg prog
           return $ env `seq` ()
 

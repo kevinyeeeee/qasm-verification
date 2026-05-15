@@ -106,6 +106,10 @@ instance Extendable Signed where
               | otherwise      = head $ reverse xs
 -}  
 
+-- | Tests the ith bit, symbolically
+testBitS :: SBits sign v -> Int -> SBool v
+testBitS (SBits xs) i = xs!!i
+
 -- | Returns the width of a symbolic int
 getWidth :: SBits sign v -> Int
 getWidth = length . unWrap
