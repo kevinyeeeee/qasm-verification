@@ -19,6 +19,7 @@ import Data.Functor.Identity (Identity)
 import Data.Complex
 import Data.Maybe (fromJust)
 import Data.Bits
+import Data.List
 
 import Control.Monad.State.Strict hiding (lift)
 
@@ -86,25 +87,25 @@ data LValue = LID ID | LLoc Integer | LLocList [Integer] deriving (Show)
 
 -- | Attempts to concretize an integer
 toKnownInt :: SimInteger -> Maybe Integer
-toKnownInt (KnownI i)    = i
+toKnownInt (KnownI i)    = Just i
 toKnownInt (SymbolicI i) = fromSymbolic i
 
 -- | Attempts to concretize an unsigned integer
 toKnownUInt :: SimUInteger -> Maybe Integer
-toKnownUInt (KnownUI i)    = i
+toKnownUInt (KnownUI i)    = Just i
 toKnownUInt (SymbolicUI i) = fromSymbolic i
 
 -- | Attempts to concretize a Boolean
 toKnownBool :: SimBool -> Maybe Bool
-toKnownBool (KnownB b)    = b
+toKnownBool (KnownB b)    = Just b
 toKnownBool (SymbolicB b) = case isConstant b of
-  True  -> Just $ getConstant b
+  True  -> Just $ 1 == getConstant b
   False -> Nothing
 
 -- | Utility for casting symbolic values
 castS :: Maybe a -> a
-castS Nothing = error "Runtime conversion from symbolic to non-symbolic value"
-castS Just a  = a
+castS Nothing  = error "Runtime conversion from symbolic to non-symbolic value"
+castS (Just a) = a
 
 -- | Indexes a value
 indexVal :: Value -> Value -> Value
@@ -113,28 +114,36 @@ indexVal val idx = case (val, resolve idx) of
     (VLocList xs, Right js) -> VLocList $ [xs!!j | j <- js]
     (VInt si, Left j)       -> case si of
       KnownI i    -> VUInt . KnownUI $ if testBit i j then 1 else 0
-      SymbolicI i -> VUInt . SBits $ [testBitS i j]
+      SymbolicI i -> VUInt . SymbolicUI . SBits $ [testBitS i j]
     (VInt si, Right js)     -> case si of
       KnownI i    -> VUInt . KnownUI $ fromBits [if testBit i j then 1 else 0 | j <- js]
-      SymbolicI i -> VUInt . SBits $ [testBitS i j | j <- js]
+      SymbolicI i -> VUInt . SymbolicUI . SBits $ [testBitS i j | j <- js]
     (VUInt si, Left j)      -> case si of
-      KnownI i    -> VUInt . KnownUI $ if testBit i j then 1 else 0
-      SymbolicI i -> VUInt . SBits $ [testBitS i j]
+      KnownUI i    -> VUInt . KnownUI $ if testBit i j then 1 else 0
+      SymbolicUI i -> VUInt . SymbolicUI . SBits $ [testBitS i j]
     (VUInt si, Right js)    -> case si of
-      KnownI i    -> VUInt . KnownUI $ fromBits [if testBit i j then 1 else 0 | j <- js]
-      SymbolicI i -> VUInt . SBits $ [testBitS i j | j <- js]
+      KnownUI i    -> VUInt . KnownUI $ fromBits [if testBit i j then 1 else 0 | j <- js]
+      SymbolicUI i -> VUInt . SymbolicUI . SBits $ [testBitS i j | j <- js]
     _                       -> error "non indexable expression"
   where resolve idx = case idx of
           VList ids -> Right $ map resolveInt ids
           _         -> Left $ resolveInt idx
+        fromBits    = foldr (+) 0 . map foo . zip [0..]
+        foo (i,b)   = b `shiftL` i
 
 -- | Resolves a value to a (non-symbolic) integer
-resolveInt :: Value -> Integer
+resolveInt :: Value -> Int
 resolveInt val = case val of
-  VInt si  -> castS $ toKnownInt si
-  VUInt si -> castS $ toKnownUInt si
-  VBool sb -> 1 == (castS $ toKnownBool sb)
+  VInt si  -> fromIntegral $ castS $ toKnownInt si
+  VUInt si -> fromIntegral $ castS $ toKnownUInt si
+  VBool sb -> if (castS $ toKnownBool sb) then 1 else 0
   _        -> error "Unexpected non-integral expression"
+
+-- | Resolves an l-value to a location
+resolveLoc :: LValue -> Integer
+resolveLoc lval = case lval of
+  LLoc i -> fromIntegral i
+  _      -> error "Unexpected lvalue expression"
 
 {-----------------------------
  Environmental utilities
@@ -175,14 +184,14 @@ declare isGlobal id val = case isGlobal of
 -- | Binds parameters of a function
 declareParams :: [(ID, Type)] -> [Value] -> Simulator ()
 declareParams params args = mapM_ go $ zip params args where
-  go ((id,_), val) = delcare False id val
+  go ((id,_), val) = declare False id val
     
 -- | Finds a binding in the environment
 searchBinding :: ID -> Simulator Value
 searchBinding id = do
   res <- gets $ \env -> msum . map (Map.lookup id) $ (globals env : locals env)
   case res of
-    Nothing -> error "Fatal: no binding found for " ++ show id
+    Nothing -> error $ "Fatal: no binding found for " ++ show id
     Just v  -> return v
 
 {-----------------------------
@@ -192,28 +201,28 @@ searchBinding id = do
 -- | Allocates a new variable
 allocVar :: ID -> Type -> Simulator Value
 allocVar id typ = case typ of
-  TBool         -> VUndefined
+  TBool         -> return VUndefined
   TCReg l       -> do
-    id <- freshen vid
+    id <- freshen id
     allocHeap False id l
   TQBit         -> do
-    id <- freshen vid
+    id <- freshen id
     ~(VLocList [x]) <- allocHeap True id 1
     return $ VLoc x
   TQReg l       -> do
-    id <- freshen vid
+    id <- freshen id
     allocHeap True id l
-  TUInt Nothing -> VUndefined
+  TUInt Nothing -> return VUndefined
   TUInt (Just l)-> do
-    id <- freshen vid
-    return $ VUInt $ SymbolicUI $ SBits [ofVar (fvar id i) | i <- [0..l-1]]
-  TInt Nothing  -> VUndefined
+    id <- freshen id
+    return $ VUInt $ SymbolicUI $ SBits [ofVar (FVar $ fvar id i) | i <- [0..l-1]]
+  TInt Nothing  -> return VUndefined
   TInt (Just l) -> do
-    id <- freshen vid
-    return $ VInt $ SymbolicI $ SBits [ofVar (fvar id i) | i <- [0..l-1]]
-  TAngle _      -> VUndefined
-  TFloat _      -> VUndefined
-  TCmplx _      -> VUndefined
+    id <- freshen id
+    return $ VInt $ SymbolicI $ SBits [ofVar (FVar $ fvar id i) | i <- [0..l-1]]
+  TAngle _      -> return VUndefined
+  TFloat _      -> return VUndefined
+  TCmplx _      -> return VUndefined
 
 -- | Allocates space on the heap
 allocHeap :: Bool -> ID -> Integer -> Simulator Value
@@ -223,27 +232,43 @@ allocHeap False pref size = do
   let st     = ket $ [ofVar (fvar pref i) | i <- [0..size-1]]
   let ps'    = pathsum env .> embed st offset (\i -> i) (\i -> i + offset)
   put $ env { pathsum = ps' }
-  return $ VLocList [i + offset | i <- [0..size-1]]
+  return $ VLocList [i + (toInteger offset) | i <- [0..size-1]]
 allocHeap True pref size = do
   env <- get
   let offset = qwidth env
   let st  = ket $ [ofVar (fvar pref i) | i <- [0..size-1]] ++
                   [ofVar (fvar (pref ++ "'") i) | i <- [0..size-1]]
   let ps' =
-        let idx i = if i < size then i + offset else i + 2*offset in
+        let idx i = if i < (fromIntegral size) then i + offset else i + 2*offset in
           pathsum env .> embed st (outDeg $ pathsum env) (\i -> i) idx
-  put $ env { pathsum = ps', qwidth = offset + size }
-  return $ VLocList [i + offset | i <- [0..size-1]]
+  put $ env { pathsum = ps', qwidth = offset + (fromIntegral size) }
+  return $ VLocList [i + (toInteger offset) | i <- [0..size-1]]
+
+-- | Allocates space on the heap
+allocWith :: Bool -> [SBool String] -> Simulator Value
+allocWith b xs = do
+  env <- get
+  let size   = if b then (length xs) `div` 2 else length xs
+  let offset = if b then qwidth env else (outDeg $ pathsum env)
+  let outI i = if b then
+                 (if i < size then i + offset else i + 2*offset)
+               else
+                 i + offset
+  let ps' = pathsum env .> embed (ket xs) (outDeg $ pathsum env) (\i -> i) outI
+  put $ env { pathsum = ps' }
+  return $ VLocList [toInteger (i + offset) | i <- [0..size-1]]
 
 -- | Freshens a variable identifier
 freshen :: ID -> Simulator ID
 freshen vid = do
   fvars <- gets (Set.fromList . map removeSubs . freeVars . pathsum)
-  return . fromJust . find (flip Set.notMember fvars) $ (vid:[vid ++ show i | i <- [1..]])
+  return . fromJust . find (`Set.notMember` fvars) $ (vid:[vid ++ (show i) | i <- [1..]])
+  where removeSubs = takeWhile (`notElem` subscripts)
+        subscripts = concat [U.subscript i | i <- [0..9]]
 
 -- | Looks up the value at a particular location in memory
 lookupLoc :: Integer -> Simulator (SBool Var)
-lookupLoc i = gets $ (!!i) . outVals . pathsum
+lookupLoc i = gets $ (!!(fromIntegral i)) . outVals . pathsum
 
 {-
 -- | Dereferences a value
@@ -354,7 +379,7 @@ stdlib = Map.fromList $
    ("tdg", \_ -> tdggate),
    ("ccx", \_ -> ccxgate),
    ("swap", \_ -> swapgate),
-   ("gphase", \[o] -> globalPhase (evalAngle o)),
+   ("gphase", \[o] -> gPhase (evalAngle o)),
    ("rz", \[o] -> rzgate (evalAngle o)),
    ("rx", \[o] -> hgate .> rzgate (evalAngle o) .> hgate),
    ("ry", \[o] -> sgate .> hgate .> rzgate (evalAngle o) .> hgate .> sdggate),
@@ -366,7 +391,6 @@ stdlib = Map.fromList $
    ("cu3", \_ -> error "cu3 gate not supported")]
   where evalAngle o = case o of
           VInt i -> fromDyadic . discretize . Continuous $ fromInteger 1
-          VBool b ->  fromDyadic . discretize . Continuous $ fromInteger (if b then 1 else 0)
           VFloat d -> fromDyadic . discretize . Continuous $ d
           _ -> error "Invalid angle"
 
@@ -385,7 +409,7 @@ measureQ p i = do
 -- | Applies a path sum (e.g. a summary) to a list of parameters
 applyBlock :: SBool Var -> [Integer] -> Pathsum DMod2 -> Simulator ()
 applyBlock p offsets ps = modify $ \env -> env { pathsum = f (pathsum env) } where
-  f = applyPControlled ps p offsets
+  f = applyPControlled ps p (map fromIntegral offsets)
 
 -- | Generates a path sum for a basic gate
 generateGate :: ID -> [Value] -> Simulator (Pathsum DMod2)
@@ -407,7 +431,7 @@ generateGate id cargs = case Map.lookup id stdlib of
 
 -- | Casts a value of one type as another type
 castValue :: Type -> Value -> Simulator Value
-castValue (EType ty _ _) val = case ty of
+castValue ty val = case ty of
   TBool -> case val of
     VBool _              -> return val
     VInt  (KnownI i)     -> return . VBool . KnownB $ i /= 0
@@ -416,67 +440,60 @@ castValue (EType ty _ _) val = case ty of
     VUInt (SymbolicUI i) -> return . VBool . SymbolicB $ testBitS i 0
     VFloat f             -> return . VBool . KnownB $ f /= 0.0
       
-  TInt Nothing -> case val of
-    VBool sb -> return . VInt . KnownI . (\b -> if b then 1 else 0) . castS . toKnownBool $ sb
-    VInt si  -> return . VInt . KnownI . castS . toKnownI $ si
-    VUInt si -> return . VInt . KnownI . castS . toKnownI $ si
-    VFloat f -> return . VInt . KnownI . truncate $ f
-
-  TInt (Just m) -> case val of
+  TInt m -> case val of
     VBool (KnownB b)       -> return . VInt . KnownI $ if b then 1 else 0
-    VBool (SymbolicB b)    -> return . VInt . SymbolicI $ setWidth (SBits [b]) m
+    VBool (SymbolicB b)    -> return . VInt . SymbolicI $ setWidthM (SBits [b]) m
     VInt (KnownI i)        -> return . VInt . KnownI $ i
-    VInt (SymbolicI i)     -> return . VInt . SymbolicI $ setWidth (convertSign i) m
+    VInt (SymbolicI i)     -> return . VInt . SymbolicI $ setWidthM (convertSign i) m
     VUInt (KnownUI i)      -> return . VInt . KnownI $ i
-    VUInt (SymbolicUI i)   -> return . VInt . SymbolicI $ setWidth (convertSign i) m
+    VUInt (SymbolicUI i)   -> return . VInt . SymbolicI $ setWidthM (convertSign i) m
     VFloat f               -> return . VInt . KnownI . truncate $ f
     VLoc l                 -> do
       b <- lookupLoc l
-      return . VInt . SymbolicI $ setWidth (SBits [b]) m
+      return . VInt . SymbolicI $ setWidthM (SBits [b]) m
     VLocList xs            -> do
       bs <- mapM lookupLoc xs
-      return . VInt . SymbolicI $ setWidth (SBits bs) m
+      return . VInt . SymbolicI $ setWidthM (SBits bs) m
 
-  TUInt Nothing -> case val of
-    VBool sb -> return . VUInt . KnownUI . (\b -> if b then 1 else 0) . castS . toKnownBool $ sb
-    VInt si  -> return . VUInt . KnownUI . unsign . castS . toKnownI $ si
-    VUInt si -> return . VUInt . KnownUI . castS . toKnownI $ si
-    VFloat f -> return . VUInt . KnownUI . unsign . truncate $ f
-
-  TUInt (Just m) -> case val of
+  TUInt m -> case val of
     VBool (KnownB b)       -> return . VUInt . KnownUI $ if b then 1 else 0
-    VBool (SymbolicB b)    -> return . VUInt . SymbolicUI $ setWidth (SBits [b]) m
+    VBool (SymbolicB b)    -> return . VUInt . SymbolicUI $ setWidthM (SBits [b]) m
     VInt (KnownI i)        -> return . VUInt . KnownUI $ unsign i
-    VInt (SymbolicI i)     -> return . VUInt . SymbolicUI $ setWidth (convertSign i) m
+    VInt (SymbolicI i)     -> return . VUInt . SymbolicUI $ setWidthM (convertSign i) m
     VUInt (KnownUI i)      -> return . VUInt . KnownUI $ i
-    VUInt (SymbolicUI i)   -> return . VUInt . SymbolicUI $ setWidth (convertSign i) m
+    VUInt (SymbolicUI i)   -> return . VUInt . SymbolicUI $ setWidthM (convertSign i) m
     VFloat f               -> return . VUInt . KnownUI . unsign . truncate $ f
     VLoc l                 -> do
       b <- lookupLoc l
-      return . VUInt . SymbolicUI $ setWidth (SBits [b]) m
+      return . VUInt . SymbolicUI $ setWidthM (SBits [b]) m
     VLocList xs            -> do
       bs <- mapM lookupLoc xs
-      return . VUInt . SymbolicUI $ setWidth (SBits bs) m
+      return . VUInt . SymbolicUI $ setWidthM (SBits bs) m
 
   TFloat _ -> case val of
-    VInt si  -> VFloat . fromIntegral . castS . toKnownI $ si
-    VUInt si -> VFloat . fromIntegral . castS . toKnownUI $ si
-    VFloat f -> val
-    VBool sb -> VFloat (\b -> if b then 1.0 else 0.0) . castS . toKnownBool $ sb
+    VInt si  -> return . VFloat . fromIntegral . castS . toKnownInt $ si
+    VUInt si -> return . VFloat . fromIntegral . castS . toKnownUInt $ si
+    VFloat f -> return val
+    VBool sb -> return . VFloat . (\b -> if b then 1.0 else 0.0) . castS . toKnownBool $ sb
 
   TAngle _ -> case val of
-    VFloat f  -> VFloat $ f / pi
+    VFloat f  -> return . VFloat $ f / pi
+
+  -- Allocate space in memory
+  TCReg m -> case val of
+    VInt  (KnownI i)     -> return . VBool . KnownB $ i /= 0
+    VInt  (SymbolicI i)  -> return . VBool . SymbolicB $ testBitS i 0
+    VUInt (KnownUI i)    -> return . VBool . KnownB $ i /= 0
+    VUInt (SymbolicUI i) -> return . VBool . SymbolicB $ testBitS i 0
+    VLocList ks          -> return val
 
   _ -> error "Runtime cast error"
   
   where unsign i = case i < 0 of
           True  -> error "Casting negative value to unsigned integer"
           False -> i
-
--- | Gets the integer value of an index
-idxOfValue :: Value -> Integer
-idxOfValue (VInt i) = i
-idxOfValue _ = error "Non-integral index value"
+        setWidthM si Nothing  = si
+        setWidthM si (Just m) = setWidth si (fromIntegral m)
 
 {-----------------------------
  Simulation
@@ -506,7 +523,7 @@ evalType typ = case typ of
     ret'  <- maybe (return Nothing) (liftM Just . evalType) ret
     return $ TProc args' ret'
 
-  where evalToInt e = evalExpr 1 e >>= \(VInt n) -> return n
+  where evalToInt = liftM (toInteger . resolveInt) . evalExpr 1
 
 -- | Evaluates a list of modifiers
 evalModifiers :: [Modifier ElaboratedType] -> Simulator (Pathsum DMod2 -> Pathsum DMod2)
@@ -518,19 +535,17 @@ evalModifiers = liftM (foldr (.) (\x -> x)) . mapM go where
     MCtrl _ neg Nothing  -> return (if neg then negControlled else controlled)
     MCtrl _ neg (Just n) -> do
       let ctrl = if neg then negControlled else controlled
-      v <- evalExpr 1 n
-      case v of
-        VInt i -> return $ \ps -> (iterate ctrl ps)!!(fromInteger i)
-        _      -> error "Invalid number of controls"
+      i <- liftM resolveInt $ evalExpr 1 n
+      return $ \ps -> (iterate ctrl ps)!!i
     MPow _ n -> do
-      v <- evalExpr 1 n
-      case v of
-        VInt i -> return $ \ps -> (iterate ((.>) ps) ps)!!(fromInteger $ i-1)
-        _      -> error "Invalid number of controls"
+      i <- liftM resolveInt $ evalExpr 1 n
+      return $ \ps -> (iterate ((.>) ps) ps)!!(i-1)
 
 -- | Evaluates an access path
 evalAP :: SBool Var -> AccessPath ElaboratedType -> Simulator LValue
-evalAP p ap = case ap of
+evalAP p ap = error "unimplemented"
+  {-
+  case ap of
   AVar _ vid -> do
     binding <- searchBinding vid
     case binding of
@@ -549,7 +564,8 @@ evalAP p ap = case ap of
   AList _ aps -> do
     aps' <- mapM (evalAP p) aps
     return $ VList aps'
-
+-}
+  
 -- | Evaluates an expression
 evalExpr :: SBool Var -> Expr ElaboratedType -> Simulator Value
 evalExpr p expr = case expr of
@@ -561,8 +577,8 @@ evalExpr p expr = case expr of
   EIm _        -> return $ VCmplx (0 :+ 1)
   EBits _ bs   -> return $ VUInt $ SymbolicUI $ SBits (map (\b -> if b then 1 else 0) bs)
 
-  ECast t _ e  -> do
-    t' <- evalType
+  ECast _ t e  -> do
+    t' <- evalType t
     v <- evalExpr p e >>= castValue t'
     return $ v
 
@@ -577,7 +593,7 @@ evalExpr p expr = case expr of
   EIndex _ x i -> do
     x' <- evalExpr p x
     i' <- evalExpr p i
-    indexVal x' i'
+    return $ indexVal x' i'
 
   ESet _ l    -> do
     set <- mapM (evalExpr p) l
@@ -586,10 +602,10 @@ evalExpr p expr = case expr of
   ESlice _ start step stop -> do
     start' <- liftM resolveInt $ evalExpr p start
     stop'  <- liftM resolveInt $ evalExpr p stop
-    step'          <- maybe (return Nothing) (liftM (Just . resolveInt) . evalExpr p) step
+    step'  <- maybe (return Nothing) (liftM (Just . resolveInt) . evalExpr p) step
     case step' of
-      Just s  -> return $ VList [ VInt (i*s) | i <- [start'..stop'],  i*s <= stop']
-      Nothing -> return $ VList [ VInt i | i <- [start'..stop'] ]
+      Just s  -> return $ VList [ VInt (KnownI $ toInteger i) | i <- [start', start'+s .. stop']]
+      Nothing -> return $ VList [ VInt (KnownI $ toInteger i) | i <- [start'..stop'] ]
 
   EUOp _ uop a -> do
     v <- evalExpr p a
@@ -604,8 +620,8 @@ evalExpr p expr = case expr of
     binding <- searchBinding id
     args'   <- mapM (evalExpr p) args
     case binding of
-      VProc _ Nothing _ (Just summary) -> applyBlock p args' summary >> return VUnit
-      VProc params _ body Nothing    -> do
+      VProc _ Nothing _ (Just summary) -> error "unimplemented"
+      VProc params _ body Nothing      -> do
         locals <- openProcScope
         declareParams params args'
         ret <- simStmt p body
@@ -646,11 +662,11 @@ simDecl decl = case decl of
   DDef did dparams dreturns dbody -> do
     dreturns' <- mapM evalType dreturns
     dparams'  <- traverse (\(a, x) -> (,) a <$> evalType x) dparams
-    declare True did (Proc dparams' dreturns' dbody Nothing)
+    declare True did (VProc dparams' dreturns' dbody Nothing)
 
   DGate gid gparams gqargs gbody -> do
-    let params = zip gparams (repeat $ TFloat Nothing) ++ zip gqargs (repeat TQit)
-    declare True did (Proc params Nothing gbody Nothing)
+    let params = zip gparams (repeat $ TFloat Nothing) ++ zip gqargs (repeat TQBit)
+    declare True gid (VProc params Nothing gbody Nothing)
 
   DExtern _ _ _ -> error "TODO"
 
@@ -667,6 +683,7 @@ simStmt p stmt = case stmt of
     openScope
     foldM (\m s -> (liftM $ mplus m) $ simStmt p s) Nothing stmts
     closeScope
+    return Nothing
 
   SWhile _ cond stmt         -> error "While loops currently unsupported"
 
@@ -683,7 +700,7 @@ simStmt p stmt = case stmt of
     ty <- evalType typ
     case v of
       VList list -> do
-        let iter ret val = (liftM $ mplus ret) (declare id val >> simStmt p stmt)
+        let iter ret val = (liftM $ mplus ret) (declare False id val >> simStmt p stmt)
         openScope
         foldM iter Nothing list
         closeScope
@@ -706,7 +723,7 @@ simStmt p stmt = case stmt of
     
   SGateCall _ mods gid cs qs -> do
     cs'  <- mapM (evalExpr p) cs
-    qs'  <- mapM (evalAP p) qs
+    qs'  <- mapM (liftM resolveLoc . evalAP p) qs
     mod' <- evalModifiers mods
     gate <- generateGate gid cs'
     applyBlock p qs' (mod' gate)
