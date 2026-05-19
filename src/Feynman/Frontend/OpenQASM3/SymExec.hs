@@ -34,6 +34,14 @@ import Feynman.Frontend.OpenQASM3.TypeCheck hiding (Env, isConstant, openProcSco
 
 import qualified Feynman.Util.Unicode as U
 
+{- Notes
+
+  1. Eval in Lvalue context to locations, every other context follow to a value
+  2. Give instances for Num and Bits on SI, SUI, SB
+  3. That would allow us to allocate uint types on the heap as well
+  4. Could short cut the refactor by replacing Vpolylist with SInt
+-}
+
 {-----------------------------
  Data types
  -----------------------------}
@@ -58,7 +66,29 @@ data SimEnv = SimEnv {
 -- | Types which have a symbolic component
 data SimInteger  = KnownI Integer  | SymbolicI    (SInt Var)  deriving (Show)
 data SimUInteger = KnownUI Integer | SymbolicUI   (SUInt Var) deriving (Show)
-data SimBool     = KnownB Bool  | SymbolicB (SBool Var) deriving (Show)
+data SimBool     = KnownB Bool     | SymbolicB (SBool Var) deriving (Show)
+
+class SymbolicRepr a where
+  type C
+  type S
+  toSymbolic :: C -> S
+  packUnary :: (C -> C) (S -> S) -> a -> a
+  packBinary :: (C -> C -> C) (S -> S -> S) -> a -> a -> a
+
+instance SymbolicRepr SimInteger where
+  type C = Integer
+  type S = SInt Var
+  toSymbolic = makeSymbolic
+
+instance SymbolicRepr SimUInteger where
+  type C = Integer
+  type S = SUInt Var
+  toSymbolic = makeSymbolic
+
+instance SymbolicRepr SimBool where
+  type C = Bool
+  type S = SBool Var
+  toSymbolic b = if b then 1 else 0
 
 -- | Values of the simulator
 data Value =
@@ -609,12 +639,12 @@ evalExpr p expr = case expr of
 
   EUOp _ uop a -> do
     v <- evalExpr p a
-    return $ evalUop uop v
+    evalUop uop v
 
   EBOp t a bop b -> do
     v1 <- evalExpr p a
     v2 <- evalExpr p b
-    return $ evalBop v1 bop v2
+    evalBop v1 bop v2
 
   ECall _ id args -> do
     binding <- searchBinding id
@@ -633,13 +663,66 @@ evalExpr p expr = case expr of
   _ -> error $ show expr
 
 -- | Evaluates a unary operator on a value
-evalUop :: UOp -> Value -> Value
-evalUop _ _ = error "Unimplemented"
+evalUop :: UOp -> Value -> Simulator Value
+evalUop op val = case (op, val) of
+  (SinOp, VFloat f) -> return . VFloat $ sin f
+  (CosOp, VFloat f) -> return . VFloat $ cos f
+  (TanOp, VFloat f) -> return . VFloat $ tan f
+  (ArccosOp, VFloat f) -> return . VFloat $ acos f
+  (ArcsinOp, VFloat f) -> return . VFloat $ asin f
+  (ArctanOp, VFloat f) -> return . VFloat $ atan f
+  (CeilOp, VFloat f) -> return . VFloat . fromIntegral $ ceiling f
+  (FloorOp, VFloat f) -> return . VFloat . fromIntegral $ floor f
+  (ExpOp, VFloat f) -> return . VFloat $ exp f
+  (ExpOp, VCmplx f) -> return . VCmplx $ exp f
+  (LnOp, VFloat f) -> return . VFloat $ log f
+  (SqrtOp, VFloat f) -> return . VFloat $ sqrt f
+  (SqrtOp, VCmplx f) -> return . VCmplx $ sqrt f
+  (RealOp, VCmplx f) -> return . VFloat $ realPart f
+  (ImOp, VCmplx f) -> return . VFloat $ imagPart f
+  (NegOp, VBool (KnownB b)) -> return . VBool . KnownB $ not b
+  (NegOp, VBool (SymbolicB b)) -> return . VBool . SymbolicB $ 1 + b
+  (NegOp, VInt (KnownI i)) -> return . VInt . KnownI $ complement i
+  (NegOp, VInt (SymbolicI b)) -> return . VInt . SymbolicI $ complement b
+  (NegOp, VUInt (KnownUI i)) -> return . VUInt . KnownUI $ complement i
+  (NegOp, VUInt (SymbolicUI b)) -> return . VUInt . SymbolicUI $ complement b
+  (UMinusOp, VInt (KnownI i)) -> return . VInt . KnownI $ (-i)
+  (UMinusOp, VInt (SymbolicI i)) -> return . VInt . SymbolicI $ (-i)
+  (UMinusOp, VUInt (KnownUI i)) -> return . VUInt . KnownUI $ (-i)
+  (UMinusOp, VUInt (SymbolicUI i)) -> return . VUInt . SymbolicUI $ (-i)
+  (UMinusOp, VFloat f) -> return . VFloat $ (-f)
+  (UMinusOp, VCmplx f) -> return . VCmplx $ (-f)
+  (PopcountOp, VUInt (KnownUI i)) -> return . VUInt . KnownUI . fromIntegral $ popCount i
+  (PopcountOp, VUInt (SymbolicUI i)) -> return . VUInt . SymbolicUI $ sPopcount i
+  _ -> error "Runtime error: invalid unary operation"
 
 -- | Evaluates a binary operator on values
-evalBop :: Value -> BinOp -> Value -> Value
-evalBop _ _ _ = error "Unimplemented"
-
+evalBop :: Value -> BinOp -> Value -> Simulator Value
+evalBop v1 op v2 = case (op, v1, v2) of
+  (AndOp, VBool b1, VBool b2) -> error "unimplemented"
+  {-
+data BinOp = AndOp -- &, &&
+           | OrOp  -- |, ||
+           | XorOp -- ^
+           | LShiftOp  -- <<
+           | RShiftOp -- >>
+           | LRotOp  -- rotl
+           | RRotOp -- rotr
+           | EqOp -- ==
+           | NEqOp -- !=
+           | LTOp -- <
+           | LEqOp -- <=
+           | GTOp -- >
+           | GEqOp -- >=
+           | PlusOp -- +
+           | MinusOp -- -
+           | TimesOp -- *
+           | DivOp -- / 
+           | ModOp -- %
+           | PowOp -- **
+           | ConcatOp -- ++, not used in openQASM 3 spec
+-}
+  
 -- | Simulates a declaration
 simDecl :: Decl ElaboratedType -> Simulator ()
 simDecl decl = case decl of
