@@ -7,6 +7,11 @@ Stability   : experimental
 Portability : portable
 -}
 
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE UndecidableInstances #-}
+
 module Feynman.Frontend.OpenQASM3.SymExec where
 
 import Data.Map (Map)
@@ -64,31 +69,78 @@ data SimEnv = SimEnv {
 } deriving (Show)
 
 -- | Types which have a symbolic component
-data SimInteger  = KnownI Integer  | SymbolicI    (SInt Var)  deriving (Show)
-data SimUInteger = KnownUI Integer | SymbolicUI   (SUInt Var) deriving (Show)
-data SimBool     = KnownB Bool     | SymbolicB (SBool Var) deriving (Show)
+type SimInteger  = Either Integer (SInt Var) 
+type SimUInteger = Either Integer (SUInt Var)
+type SimBool     = Either Bool    (SBool Var)
 
-class SymbolicRepr a where
-  type C
-  type S
-  toSymbolic :: C -> S
-  packUnary :: (C -> C) (S -> S) -> a -> a
-  packBinary :: (C -> C -> C) (S -> S -> S) -> a -> a -> a
+-- | Co-products with a promotion
+class SymbolicRepr c t | t -> c where
+  symbolicRepr :: c -> t
+  concretize :: Either c t -> Maybe c
 
-instance SymbolicRepr SimInteger where
-  type C = Integer
-  type S = SInt Var
-  toSymbolic = makeSymbolic
+instance SignBit (SBits a v) v => SymbolicRepr Integer (SBits a v) where
+  symbolicRepr = makeSymbolic
+  concretize   = either (Just) (fromSymbolic)
 
-instance SymbolicRepr SimUInteger where
-  type C = Integer
-  type S = SUInt Var
-  toSymbolic = makeSymbolic
+instance SymbolicRepr Bool (SBool Var) where
+  symbolicRepr = \b -> if b then 1 else 0
+  concretize   = either (Just) (fromSymbolicPoly) where
+    fromSymbolicPoly b = if isConstant b then Just (1 == b) else Nothing
 
-instance SymbolicRepr SimBool where
-  type C = Bool
-  type S = SBool Var
-  toSymbolic b = if b then 1 else 0
+pattern Concrete c <- Left c where
+  Concrete c = Left c
+
+pattern Symbolic c <- Right c where
+  Symbolic c = Right c
+
+-- | Promotes a symbolic
+promoteRepr :: SymbolicRepr c t => Either c t -> Either c t
+promoteRepr = either (Symbolic . symbolicRepr) (Symbolic)
+
+-- | Unifies the representation of two symbolic types
+unifyRepr :: SymbolicRepr c t => Either c t -> Either c t -> Either (c,c) (t,t)
+unifyRepr a b  = case (a,b) of
+  (Concrete a', Concrete b') -> Concrete (a',b')
+  (Concrete a', Symbolic b') -> Symbolic (symbolicRepr a', b')
+  (Symbolic a', Concrete b') -> Symbolic (a', symbolicRepr b')
+  (Symbolic a', Symbolic b') -> Symbolic (a', b')
+
+-- | Shorthand for applying a unary operator on a symbolic representation
+applyUnary :: (c -> c') -> (t -> t') -> Either c t -> Either c' t'
+applyUnary a b = either (Left . a) (Right . b)
+
+-- | Shorthand for applying a binary operator on a symbolic representation
+applyBinary :: SymbolicRepr c t =>
+               (c -> c -> c') ->
+               (t -> t -> t') ->
+               (Either c t -> Either c t -> Either c' t')
+applyBinary a b e = either (Left . uncurry a) (Right . uncurry b) . unifyRepr e
+
+-- | Utility for casting symbolic values
+castS :: Maybe a -> a
+castS Nothing  = error "Runtime conversion from symbolic to non-symbolic value"
+castS (Just a) = a
+
+instance SignBit (SBits a v) v => Num (Either Integer (SBits a v)) where
+  (+)         = applyBinary (+) (+)
+  (*)         = applyBinary (*) (*)
+  negate      = applyUnary negate negate
+  abs         = applyUnary abs abs
+  signum      = applyUnary signum signum
+  fromInteger = Concrete
+
+instance SignBit (SBits a v) v => Bits (Either Integer (SBits a v)) where
+  (.&.)        = applyBinary (.&.) (.&.)
+  (.|.)        = applyBinary (.|.) (.|.)
+  xor          = applyBinary xor xor
+  complement   = applyUnary complement complement
+  shift a b    = applyUnary (\a -> shift a b) (\a -> shift a b) a
+  rotate a b   = applyUnary (\a -> rotate a b) (\a -> rotate a b) a 
+  bitSize      = either bitSize bitSize
+  bitSizeMaybe = either bitSizeMaybe bitSizeMaybe
+  isSigned     = either isSigned isSigned
+  testBit      = error "Unimplemented"
+  bit          = error "Unimplemented"
 
 -- | Values of the simulator
 data Value =
@@ -115,58 +167,36 @@ data LValue = LID ID | LLoc Integer | LLocList [Integer] deriving (Show)
  Data utilities
  -----------------------------}
 
--- | Attempts to concretize an integer
-toKnownInt :: SimInteger -> Maybe Integer
-toKnownInt (KnownI i)    = Just i
-toKnownInt (SymbolicI i) = fromSymbolic i
-
--- | Attempts to concretize an unsigned integer
-toKnownUInt :: SimUInteger -> Maybe Integer
-toKnownUInt (KnownUI i)    = Just i
-toKnownUInt (SymbolicUI i) = fromSymbolic i
-
--- | Attempts to concretize a Boolean
-toKnownBool :: SimBool -> Maybe Bool
-toKnownBool (KnownB b)    = Just b
-toKnownBool (SymbolicB b) = case isConstant b of
-  True  -> Just $ 1 == getConstant b
-  False -> Nothing
-
--- | Utility for casting symbolic values
-castS :: Maybe a -> a
-castS Nothing  = error "Runtime conversion from symbolic to non-symbolic value"
-castS (Just a) = a
-
 -- | Indexes a value
 indexVal :: Value -> Value -> Value
 indexVal val idx = case (val, resolve idx) of
-    (VLocList xs, Left j)   -> VLoc $ xs!!j
-    (VLocList xs, Right js) -> VLocList $ [xs!!j | j <- js]
-    (VInt si, Left j)       -> case si of
-      KnownI i    -> VUInt . KnownUI $ if testBit i j then 1 else 0
-      SymbolicI i -> VUInt . SymbolicUI . SBits $ [testBitS i j]
-    (VInt si, Right js)     -> case si of
-      KnownI i    -> VUInt . KnownUI $ fromBits [if testBit i j then 1 else 0 | j <- js]
-      SymbolicI i -> VUInt . SymbolicUI . SBits $ [testBitS i j | j <- js]
-    (VUInt si, Left j)      -> case si of
-      KnownUI i    -> VUInt . KnownUI $ if testBit i j then 1 else 0
-      SymbolicUI i -> VUInt . SymbolicUI . SBits $ [testBitS i j]
-    (VUInt si, Right js)    -> case si of
-      KnownUI i    -> VUInt . KnownUI $ fromBits [if testBit i j then 1 else 0 | j <- js]
-      SymbolicUI i -> VUInt . SymbolicUI . SBits $ [testBitS i j | j <- js]
+    (VLocList xs, Concrete j)  -> VLoc $ xs!!j
+    (VLocList xs, Symbolic js) -> VLocList $ [xs!!j | j <- js]
+    (VInt si, Concrete j)      -> case si of
+      Concrete i -> VUInt . Concrete $ if testBit i j then 1 else 0
+      Symbolic i -> VUInt . Symbolic . SBits $ [testBitS i j]
+    (VInt si, Symbolic js)     -> case si of
+      Concrete i -> VUInt . Concrete $ fromBits [if testBit i j then 1 else 0 | j <- js]
+      Symbolic i -> VUInt . Symbolic . SBits $ [testBitS i j | j <- js]
+    (VUInt si, Concrete j)     -> case si of
+      Concrete i -> VUInt . Concrete $ if testBit i j then 1 else 0
+      Symbolic i -> VUInt . Symbolic . SBits $ [testBitS i j]
+    (VUInt si, Symbolic js)    -> case si of
+      Concrete i -> VUInt . Concrete $ fromBits [if testBit i j then 1 else 0 | j <- js]
+      Symbolic i -> VUInt . Symbolic . SBits $ [testBitS i j | j <- js]
     _                       -> error "non indexable expression"
   where resolve idx = case idx of
-          VList ids -> Right $ map resolveInt ids
-          _         -> Left $ resolveInt idx
+          VList ids -> Symbolic $ map resolveInt ids
+          _         -> Concrete $ resolveInt idx
         fromBits    = foldr (+) 0 . map foo . zip [0..]
         foo (i,b)   = b `shiftL` i
 
 -- | Resolves a value to a (non-symbolic) integer
 resolveInt :: Value -> Int
 resolveInt val = case val of
-  VInt si  -> fromIntegral $ castS $ toKnownInt si
-  VUInt si -> fromIntegral $ castS $ toKnownUInt si
-  VBool sb -> if (castS $ toKnownBool sb) then 1 else 0
+  VInt si  -> fromIntegral $ castS $ concretize si
+  VUInt si -> fromIntegral $ castS $ concretize si
+  VBool sb -> if (castS $ concretize sb) then 1 else 0
   _        -> error "Unexpected non-integral expression"
 
 -- | Resolves an l-value to a location
@@ -174,6 +204,10 @@ resolveLoc :: LValue -> Integer
 resolveLoc lval = case lval of
   LLoc i -> fromIntegral i
   _      -> error "Unexpected lvalue expression"
+
+-- | Promotes a bit to an int
+intOfBit :: Bool -> Integer
+intOfBit b = if b then 1 else 0
 
 {-----------------------------
  Environmental utilities
@@ -245,11 +279,11 @@ allocVar id typ = case typ of
   TUInt Nothing -> return VUndefined
   TUInt (Just l)-> do
     id <- freshen id
-    return $ VUInt $ SymbolicUI $ SBits [ofVar (FVar $ fvar id i) | i <- [0..l-1]]
+    return $ VUInt $ Symbolic $ SBits [ofVar (FVar $ fvar id i) | i <- [0..l-1]]
   TInt Nothing  -> return VUndefined
   TInt (Just l) -> do
     id <- freshen id
-    return $ VInt $ SymbolicI $ SBits [ofVar (FVar $ fvar id i) | i <- [0..l-1]]
+    return $ VInt $ Symbolic $ SBits [ofVar (FVar $ fvar id i) | i <- [0..l-1]]
   TAngle _      -> return VUndefined
   TFloat _      -> return VUndefined
   TCmplx _      -> return VUndefined
@@ -300,59 +334,6 @@ freshen vid = do
 lookupLoc :: Integer -> Simulator (SBool Var)
 lookupLoc i = gets $ (!!(fromIntegral i)) . outVals . pathsum
 
-{-
--- | Dereferences a value
-deref :: Value -> Integer -> Value
-deref v idx = case v of
-
-  VInt i          -> VBool $ ((i `shiftR` (fromInteger idx)) `mod` 2) == 1
-
-  VQReg start len -> if idx < len then
-                       VQBit (start + idx)
-                     else
-                       error "Out of bounds array access"
-
-  VCReg start len -> if idx < len then
-                       VCBit (start + idx)
-                     else
-                       error "Out of bounds array access"
-
-  VPolyList xs    -> if idx < toInteger (length xs) then
-                       VPoly (xs!!(fromInteger idx))
-                     else
-                       error "Out of bounds array access"
-
-  _               -> error "Unexpected: value is not indexable"
-
--- | Assigns a scalar to a new value. Note that only locals can be modified
-assignScalar :: ID -> Type -> Value -> Simulator ()
-assignScalar id ty v = modify $ \env -> env { locals = assign (locals env) } where
-  assign []     = error $ "No binding for variable " ++ show id
-  assign (c:cs) = case Map.lookup id c of
-    Just _ -> (Map.insert id (Scalar ty v) c):cs
-    _      -> c:(assign cs)
-
--- | Assigns a symbolic (classical) variable to a new value
-assignSymbolic :: SBool Var -> Type -> Integer -> Value -> Simulator ()
-assignSymbolic p ty offset v = case (ty, v) of
-  (_, VBool b)    -> modify $ write [0]
-  (_, VPoly poly) -> modify $ write [poly]
-  (TCReg n, _)    -> modify $ write (castSymbolic n v)
-  (TUInt n, _)    -> modify $ write (castSymbolic n v)
-  _               -> error $ "Type " ++ show ty ++ " is not a symbolic type"
-  where
-
-    castSymbolic n v = case v of
-      VBool b -> makeSNat (if b then 1 else 0)
-      VInt i  -> makeSNat (toInteger i)
-
-    write xs env =
-      let idx = fromInteger offset
-          ps = applyPControlled (overwrite xs) p [idx..idx+length xs] $ pathsum env
-      in
-        env { pathsum = ps }
--}
-
 -- | Gives the unicode representation of the ith offset of v
 fvar :: ID -> Integer -> String
 fvar v i = U.sub v i
@@ -368,24 +349,6 @@ getCWidth = gets $ \env -> outDeg (pathsum env) - 2*(qwidth env)
 -- | Index of pathsum where classical registers start
 getCOffset :: Simulator Int
 getCOffset = gets $ \env -> 2*(qwidth env)
-
-{-
--- | Returns the memory locations of a quantum variable
-getQVarOffsets :: Value -> Simulator (Maybe [Int])
-getQVarOffsets v = case v of
-  VQBit i   -> return $ Just [fromInteger i]
-  VQReg i j -> return $ Just [fromInteger i..fromInteger i+fromInteger j-1]
-  _         -> return Nothing
-
--- | Returns the memory locations of a classical variable
-getCVarOffsets :: Value -> Simulator (Maybe [Int])
-getCVarOffsets v = do
-  o <- getCOffset
-  case v of
-    VCBit i   -> return $ Just [fromInteger i+o]
-    VCReg i j -> return $ Just [fromInteger i+o..fromInteger i+o+fromInteger j-1]
-    _         -> return Nothing
--}
 
 {-----------------------------
  Path sum utilities
@@ -463,67 +426,49 @@ generateGate id cargs = case Map.lookup id stdlib of
 castValue :: Type -> Value -> Simulator Value
 castValue ty val = case ty of
   TBool -> case val of
-    VBool _              -> return val
-    VInt  (KnownI i)     -> return . VBool . KnownB $ i /= 0
-    VInt  (SymbolicI i)  -> return . VBool . SymbolicB $ testBitS i 0
-    VUInt (KnownUI i)    -> return . VBool . KnownB $ i /= 0
-    VUInt (SymbolicUI i) -> return . VBool . SymbolicB $ testBitS i 0
-    VFloat f             -> return . VBool . KnownB $ f /= 0.0
+    VBool _  -> return val
+    VInt  i  -> return . VBool $ applyUnary (/= 0) (flip testBitS 0) i
+    VUInt  i -> return . VBool $ applyUnary (/= 0) (flip testBitS 0) i
+    VFloat f -> return . VBool . Concrete $ f /= 0.0
       
   TInt m -> case val of
-    VBool (KnownB b)       -> return . VInt . KnownI $ if b then 1 else 0
-    VBool (SymbolicB b)    -> return . VInt . SymbolicI $ setWidthM (SBits [b]) m
-    VInt (KnownI i)        -> return . VInt . KnownI $ i
-    VInt (SymbolicI i)     -> return . VInt . SymbolicI $ setWidthM (convertSign i) m
-    VUInt (KnownUI i)      -> return . VInt . KnownI $ i
-    VUInt (SymbolicUI i)   -> return . VInt . SymbolicI $ setWidthM (convertSign i) m
-    VFloat f               -> return . VInt . KnownI . truncate $ f
-    VLoc l                 -> do
-      b <- lookupLoc l
-      return . VInt . SymbolicI $ setWidthM (SBits [b]) m
-    VLocList xs            -> do
-      bs <- mapM lookupLoc xs
-      return . VInt . SymbolicI $ setWidthM (SBits bs) m
+    VBool b     -> return . VInt $ applyUnary (intOfBit) (setWidthM m . SBits . (:[])) b
+    VInt i      -> return . VInt $ applyUnary (id) (setWidthM m) i
+    VUInt i     -> return . VInt $ applyUnary (id) (setWidthM m . promoteUnsigned) i
+    VFloat f    -> return . VInt . Concrete . truncate $ f
+    VLoc l      -> lookupLoc l >>= return . VInt . Symbolic . setWidthM m . SBits . (:[])
+    VLocList xs -> mapM lookupLoc xs >>= return . VInt . Symbolic . setWidthM m . SBits
 
   TUInt m -> case val of
-    VBool (KnownB b)       -> return . VUInt . KnownUI $ if b then 1 else 0
-    VBool (SymbolicB b)    -> return . VUInt . SymbolicUI $ setWidthM (SBits [b]) m
-    VInt (KnownI i)        -> return . VUInt . KnownUI $ unsign i
-    VInt (SymbolicI i)     -> return . VUInt . SymbolicUI $ setWidthM (convertSign i) m
-    VUInt (KnownUI i)      -> return . VUInt . KnownUI $ i
-    VUInt (SymbolicUI i)   -> return . VUInt . SymbolicUI $ setWidthM (convertSign i) m
-    VFloat f               -> return . VUInt . KnownUI . unsign . truncate $ f
-    VLoc l                 -> do
-      b <- lookupLoc l
-      return . VUInt . SymbolicUI $ setWidthM (SBits [b]) m
-    VLocList xs            -> do
-      bs <- mapM lookupLoc xs
-      return . VUInt . SymbolicUI $ setWidthM (SBits bs) m
+    VBool b     -> return . VUInt $ applyUnary (intOfBit) (setWidthM m . SBits . (:[])) b
+    VInt i      -> return . VUInt $ applyUnary (unsign) (setWidthM m . convertSign) i
+    VUInt i     -> return . VUInt $ applyUnary (id) (setWidthM m) i
+    VFloat f    -> return . VUInt . Concrete . truncate $ f
+    VLoc l      -> lookupLoc l >>= return . VUInt . Symbolic . setWidthM m . SBits . (:[])
+    VLocList xs -> mapM lookupLoc xs >>= return . VUInt . Symbolic . setWidthM m . SBits
 
   TFloat _ -> case val of
-    VInt si  -> return . VFloat . fromIntegral . castS . toKnownInt $ si
-    VUInt si -> return . VFloat . fromIntegral . castS . toKnownUInt $ si
+    VInt si  -> return . VFloat . fromIntegral . castS . concretize $ si
+    VUInt si -> return . VFloat . fromIntegral . castS . concretize $ si
     VFloat f -> return val
-    VBool sb -> return . VFloat . (\b -> if b then 1.0 else 0.0) . castS . toKnownBool $ sb
+    VBool sb -> return . VFloat . fromIntegral . intOfBit . castS . concretize $ sb
 
   TAngle _ -> case val of
     VFloat f  -> return . VFloat $ f / pi
 
   -- Allocate space in memory
   TCReg m -> case val of
-    VInt  (KnownI i)     -> return . VBool . KnownB $ i /= 0
-    VInt  (SymbolicI i)  -> return . VBool . SymbolicB $ testBitS i 0
-    VUInt (KnownUI i)    -> return . VBool . KnownB $ i /= 0
-    VUInt (SymbolicUI i) -> return . VBool . SymbolicB $ testBitS i 0
-    VLocList ks          -> return val
+    VInt  i     -> return . VBool . applyUnary (/= 0) (flip testBitS 0) $ i
+    VUInt i     -> return . VBool . applyUnary (/= 0) (flip testBitS 0) $ i
+    VLocList ks -> return val
 
   _ -> error "Runtime cast error"
   
   where unsign i = case i < 0 of
           True  -> error "Casting negative value to unsigned integer"
           False -> i
-        setWidthM si Nothing  = si
-        setWidthM si (Just m) = setWidth si (fromIntegral m)
+        setWidthM Nothing  si = si
+        setWidthM (Just m) si = setWidth si (fromIntegral m)
 
 {-----------------------------
  Simulation
@@ -539,8 +484,8 @@ evalType typ = case typ of
   TCReg e -> liftM TCReg $ evalToInt e
   TQReg e -> liftM TQReg $ evalToInt e
 
-  TUInt me  -> liftM TUInt $ maybe (return Nothing) (liftM Just . evalToInt) me
-  TInt me   -> liftM TInt $ maybe (return Nothing) (liftM Just . evalToInt) me
+  TUInt me  -> liftM TUInt  $ maybe (return Nothing) (liftM Just . evalToInt) me
+  TInt me   -> liftM TInt   $ maybe (return Nothing) (liftM Just . evalToInt) me
   TAngle me -> liftM TAngle $ maybe (return Nothing) (liftM Just . evalToInt) me
   TFloat me -> liftM TFloat $ maybe (return Nothing) (liftM Just . evalToInt) me
   TCmplx me -> liftM TCmplx $ maybe (return Nothing) (liftM Just . evalToInt) me
@@ -599,13 +544,13 @@ evalAP p ap = error "unimplemented"
 -- | Evaluates an expression
 evalExpr :: SBool Var -> Expr ElaboratedType -> Simulator Value
 evalExpr p expr = case expr of
-  EInt _ n     -> return $ VInt $ KnownI n
+  EInt _ n     -> return $ VInt $ Concrete n
   EFloat _ f   -> return $ VFloat f 
   ECmplx _ c   -> return $ VCmplx c
-  EBool _ b    -> return $ VBool $ KnownB b 
+  EBool _ b    -> return $ VBool $ Concrete b 
   EPi _        -> return $ VFloat pi
   EIm _        -> return $ VCmplx (0 :+ 1)
-  EBits _ bs   -> return $ VUInt $ SymbolicUI $ SBits (map (\b -> if b then 1 else 0) bs)
+  EBits _ bs   -> return $ VUInt $ Symbolic $ SBits (map (\b -> if b then 1 else 0) bs)
 
   ECast _ t e  -> do
     t' <- evalType t
@@ -615,8 +560,8 @@ evalExpr p expr = case expr of
   EMeasure _ e -> do
     v <- evalExpr p e
     case v of
-      VLoc l      -> liftM (VBool . SymbolicB) $ measureQ p l
-      VLocList ls -> liftM (VUInt . SymbolicUI . SBits) $ mapM (measureQ p) ls
+      VLoc l      -> liftM (VBool . Symbolic) $ measureQ p l
+      VLocList ls -> liftM (VUInt . Symbolic . SBits) $ mapM (measureQ p) ls
 
   EVar _ id   -> searchBinding id
 
@@ -634,8 +579,8 @@ evalExpr p expr = case expr of
     stop'  <- liftM resolveInt $ evalExpr p stop
     step'  <- maybe (return Nothing) (liftM (Just . resolveInt) . evalExpr p) step
     case step' of
-      Just s  -> return $ VList [ VInt (KnownI $ toInteger i) | i <- [start', start'+s .. stop']]
-      Nothing -> return $ VList [ VInt (KnownI $ toInteger i) | i <- [start'..stop'] ]
+      Just s  -> return $ VList [ VInt (Concrete $ toInteger i) | i <- [start', start'+s .. stop']]
+      Nothing -> return $ VList [ VInt (Concrete $ toInteger i) | i <- [start'..stop'] ]
 
   EUOp _ uop a -> do
     v <- evalExpr p a
@@ -680,48 +625,104 @@ evalUop op val = case (op, val) of
   (SqrtOp, VCmplx f) -> return . VCmplx $ sqrt f
   (RealOp, VCmplx f) -> return . VFloat $ realPart f
   (ImOp, VCmplx f) -> return . VFloat $ imagPart f
-  (NegOp, VBool (KnownB b)) -> return . VBool . KnownB $ not b
-  (NegOp, VBool (SymbolicB b)) -> return . VBool . SymbolicB $ 1 + b
-  (NegOp, VInt (KnownI i)) -> return . VInt . KnownI $ complement i
-  (NegOp, VInt (SymbolicI b)) -> return . VInt . SymbolicI $ complement b
-  (NegOp, VUInt (KnownUI i)) -> return . VUInt . KnownUI $ complement i
-  (NegOp, VUInt (SymbolicUI b)) -> return . VUInt . SymbolicUI $ complement b
-  (UMinusOp, VInt (KnownI i)) -> return . VInt . KnownI $ (-i)
-  (UMinusOp, VInt (SymbolicI i)) -> return . VInt . SymbolicI $ (-i)
-  (UMinusOp, VUInt (KnownUI i)) -> return . VUInt . KnownUI $ (-i)
-  (UMinusOp, VUInt (SymbolicUI i)) -> return . VUInt . SymbolicUI $ (-i)
+  (NegOp, VBool b) -> return . VBool $ applyUnary (not) (1+) b
+  (NegOp, VInt i) -> return . VInt $ complement i
+  (NegOp, VUInt i) -> return . VUInt $ complement i
+  (UMinusOp, VInt i) -> return . VInt $ negate i
+  (UMinusOp, VUInt i) -> return . VUInt $ negate i
   (UMinusOp, VFloat f) -> return . VFloat $ (-f)
   (UMinusOp, VCmplx f) -> return . VCmplx $ (-f)
-  (PopcountOp, VUInt (KnownUI i)) -> return . VUInt . KnownUI . fromIntegral $ popCount i
-  (PopcountOp, VUInt (SymbolicUI i)) -> return . VUInt . SymbolicUI $ sPopcount i
+  (PopcountOp, VUInt i) -> return . VUInt $ applyUnary (fromIntegral . popCount) (sPopcount) i
   _ -> error "Runtime error: invalid unary operation"
 
 -- | Evaluates a binary operator on values
 evalBop :: Value -> BinOp -> Value -> Simulator Value
 evalBop v1 op v2 = case (op, v1, v2) of
-  (AndOp, VBool b1, VBool b2) -> error "unimplemented"
-  {-
-data BinOp = AndOp -- &, &&
-           | OrOp  -- |, ||
-           | XorOp -- ^
-           | LShiftOp  -- <<
-           | RShiftOp -- >>
-           | LRotOp  -- rotl
-           | RRotOp -- rotr
-           | EqOp -- ==
-           | NEqOp -- !=
-           | LTOp -- <
-           | LEqOp -- <=
-           | GTOp -- >
-           | GEqOp -- >=
-           | PlusOp -- +
-           | MinusOp -- -
-           | TimesOp -- *
-           | DivOp -- / 
-           | ModOp -- %
-           | PowOp -- **
-           | ConcatOp -- ++, not used in openQASM 3 spec
--}
+  (AndOp, VBool b1, VBool b2)   -> return . VBool $ applyBinary (&&) (*) b1 b2
+  (AndOp, VInt i1, VInt i2)     -> return . VInt $ i1 .&. i2
+  (AndOp, VUInt i1, VUInt i2)   -> return . VUInt $ i1 .&. i2
+
+  (OrOp, VBool b1, VBool b2)    -> return . VBool $ applyBinary (||) (\a b -> a + b + a*b) b1 b2
+  (OrOp, VInt i1, VInt i2)      -> return . VInt $ i1 .|. i2
+  (OrOp, VUInt i1, VUInt i2)    -> return . VUInt $ i1 .|. i2
+
+  (XorOp, VBool b1, VBool b2)   -> return . VBool $ applyBinary (xor) (+) b1 b2
+  (XorOp, VInt i1, VInt i2)     -> return . VInt $ i1 `xor` i2
+  (XorOp, VUInt i1, VUInt i2)   -> return . VUInt $ i1 `xor` i2
+
+  -- Differs from the specs (defined by uint, int arguments)
+  (LShiftOp, VUInt i1, VUInt i2) -> let shiftL' a = shift a . fromIntegral  in
+    return . VUInt $ applyBinary (shiftL') (sLShift) i1 i2
+  (RShiftOp, VUInt i1, VUInt i2) -> let shiftR' a = shift a . fromIntegral  in
+    return . VUInt $ applyBinary (shiftR') (sRShift) i1 i2
+
+  -- Differs from the specs (defined by uint, int arguments)
+  (LRotOp, VUInt i1, VUInt i2) -> let rotateL' a = rotateL a . fromIntegral  in
+    return . VUInt $ applyBinary (rotateL') (sLRot) i1 i2
+  (RRotOp, VUInt i1, VUInt i2) -> let rotateR' a = rotateR a . fromIntegral  in
+    return . VUInt $ applyBinary (rotateR') (sRRot) i1 i2
+
+  (EqOp, VBool b1, VBool b2)    -> return . VBool $ applyBinary (==) (\a b -> 1 + a + b) b1 b2
+  (EqOp, VInt i1, VInt i2)      -> return . VBool $ applyBinary (==) (sEq) i1 i2
+  (EqOp, VUInt i1, VUInt i2)    -> return . VBool $ applyBinary (==) (sEq) i1 i2
+  (EqOp, VFloat f1, VFloat f2)  -> return . VBool . Concrete $ f1 == f2
+  (EqOp, VCmplx c1, VCmplx c2)  -> return . VBool . Concrete $ c1 == c2
+
+  (LTOp, VBool b1, VBool b2)    -> return . VBool $ applyBinary (<) (\a b -> (1+a)*b) b1 b2
+  (LTOp, VInt i1, VInt i2)      -> return . VBool $ applyBinary (<) (sLT) i1 i2
+  (LTOp, VUInt i1, VUInt i2)    -> return . VBool $ applyBinary (<) (sLT) i1 i2
+  (LTOp, VFloat f1, VFloat f2)  -> return . VBool . Concrete $ f1 < f2
+
+  (LEqOp, VBool b1, VBool b2)    -> return . VBool $ applyBinary (<=) (\a b -> 1 + a*(1+b)) b1 b2
+  (LEqOp, VInt i1, VInt i2)      -> return . VBool $ applyBinary (<=) (sLEq) i1 i2
+  (LEqOp, VUInt i1, VUInt i2)    -> return . VBool $ applyBinary (<=) (sLEq) i1 i2
+  (LEqOp, VFloat f1, VFloat f2)  -> return . VBool . Concrete $ f1 <= f2
+
+  (GTOp, VBool b1, VBool b2)    -> return . VBool $ applyBinary (>) (\a b -> a*(1+b)) b1 b2
+  (GTOp, VInt i1, VInt i2)      -> return . VBool $ applyBinary (>) (sGT) i1 i2
+  (GTOp, VUInt i1, VUInt i2)    -> return . VBool $ applyBinary (>) (sGT) i1 i2
+  (GTOp, VFloat f1, VFloat f2)  -> return . VBool . Concrete $ f1 > f2
+
+  (GEqOp, VBool b1, VBool b2)    -> return . VBool $ applyBinary (>=) (\a b -> 1 + (1+a)*b) b1 b2
+  (GEqOp, VInt i1, VInt i2)      -> return . VBool $ applyBinary (>=) (sGEq) i1 i2
+  (GEqOp, VUInt i1, VUInt i2)    -> return . VBool $ applyBinary (>=) (sGEq) i1 i2
+  (GEqOp, VFloat f1, VFloat f2)  -> return . VBool . Concrete $ f1 >= f2
+
+  (PlusOp, VBool b1, VBool b2)    -> return . VBool $ applyBinary (xor) (+) b1 b2
+  (PlusOp, VInt i1, VInt i2)      -> return . VInt $ applyBinary (+) (+) i1 i2
+  (PlusOp, VUInt i1, VUInt i2)    -> return . VUInt $ applyBinary (+) (+) i1 i2
+  (PlusOp, VFloat f1, VFloat f2)  -> return . VFloat $ f1 + f2
+  (PlusOp, VCmplx c1, VCmplx c2)  -> return . VCmplx $ c1 + c2
+
+  (MinusOp, VBool b1, VBool b2)    -> return . VBool $ applyBinary (xor) (+) b1 b2
+  (MinusOp, VInt i1, VInt i2)      -> return . VInt $ applyBinary (-) (-) i1 i2
+  (MinusOp, VUInt i1, VUInt i2)    -> return . VUInt $ applyBinary (-) (-) i1 i2
+  (MinusOp, VFloat f1, VFloat f2)  -> return . VFloat $ f1 - f2
+  (MinusOp, VCmplx c1, VCmplx c2)  -> return . VCmplx $ c1 - c2
+
+  (TimesOp, VBool b1, VBool b2)    -> return . VBool $ applyBinary (&&) (*) b1 b2
+  (TimesOp, VInt i1, VInt i2)      -> return . VInt $ applyBinary (*) (*) i1 i2
+  (TimesOp, VUInt i1, VUInt i2)    -> return . VUInt $ applyBinary (*) (*) i1 i2
+  (TimesOp, VFloat f1, VFloat f2)  -> return . VFloat $ f1 * f2
+  (TimesOp, VCmplx c1, VCmplx c2)  -> return . VCmplx $ c1 * c2
+
+  (DivOp, VInt i1, VInt i2)      -> return . VInt $ applyBinary (quot) (sQuot) i1 i2
+  (DivOp, VUInt i1, VUInt i2)    -> return . VUInt $ applyBinary (quot) (sQuot) i1 i2
+  (DivOp, VFloat f1, VFloat f2)  -> return . VFloat $ f1 / f2
+  (DivOp, VCmplx c1, VCmplx c2)  -> return . VCmplx $ c1 / c2
+
+  (ModOp, VInt i1, VInt i2)      -> return . VInt $ applyBinary (rem) (sMod) i1 i2
+  (ModOp, VUInt i1, VUInt i2)    -> return . VUInt $ applyBinary (rem) (sMod) i1 i2
+  (ModOp, VFloat f1, VFloat f2)  -> return . VFloat $ f1 - f2 * fromIntegral (floor $ f1 / f2)
+
+  (PowOp, VInt i1, VInt i2)      -> return . VInt $ applyBinary (^) (sPow) i1 i2
+  (PowOp, VUInt i1, VUInt i2)    -> return . VUInt $ applyBinary (^) (sPow) i1 i2
+  (PowOp, VFloat f1, VFloat f2)  -> return . VFloat $ f1 ** f2
+  (PowOp, VCmplx c1, VCmplx c2)  -> return . VCmplx $ c1 ** c2
+
+  (ConcatOp, VLocList l1, VLocList l2) -> return . VLocList $ l1 ++ l2
+
+  _  -> error "Bad operands to binary operator"
   
 -- | Simulates a declaration
 simDecl :: Decl ElaboratedType -> Simulator ()
@@ -773,8 +774,8 @@ simStmt p stmt = case stmt of
   SIf _ cond stmtT stmtE     -> do
     q <- evalExpr p cond
     case q of
-      VBool (KnownB b)    -> if b then simStmt p stmtT else simStmt p stmtE
-      VBool (SymbolicB b) -> do
+      VBool (Concrete b)    -> if b then simStmt p stmtT else simStmt p stmtE
+      VBool (Symbolic b) -> do
         simStmt (p*b) stmtT
         simStmt (p*(1+b)) stmtE
   
@@ -797,10 +798,10 @@ simStmt p stmt = case stmt of
       VLocList ls -> mapM_ (resetQ p) ls
     return Nothing
 
-  SDeclare _ decl            -> if p == 1 then
-                                  simDecl decl >> return Nothing
-                                else
-                                  error "invalid stmt in symbolic branch"
+  SDeclare _ decl -> if p == 1 then
+                       simDecl decl >> return Nothing
+                     else
+                       error "invalid stmt in symbolic branch"
 
   SAssign _ ap expr -> error "unimplemented"
     

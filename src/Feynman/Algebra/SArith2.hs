@@ -92,20 +92,6 @@ instance MVar v => SignBit (SInt v) v where
     | length xs == 0 = SBits []
     | otherwise      = SBits . reverse $ s:(tail $ reverse xs)
 
-{-
--- | Type class for overloading setWidth
-class Extendable a where
-  setWidth :: SBits a v -> Int -> SBits a v
-
-instance Extendable Unsigned where
-  setWidth (SBits xs) n = SBits $ take n xs ++ (replicate (n - length xs) 0)
-
-instance Extendable Signed where
-  setWidth (SBits xs) n = SBits $ take n xs ++ (replicate (n - length xs) sgn)
-    where sgn | length xs == 0 = 0
-              | otherwise      = head $ reverse xs
--}  
-
 -- | Tests the ith bit, symbolically
 testBitS :: SBits sign v -> Int -> SBool v
 testBitS (SBits xs) i = xs!!i
@@ -145,7 +131,12 @@ makeSInt = makeSymbolic
 makeSUInt :: MVar v => Integer -> SUInt v
 makeSUInt = makeSymbolic
 
--- | Converts between signed and unsigned representations
+-- | Promotes an unsigned representation to a signed one
+promoteUnsigned :: SignBit (SBits Unsigned v) v => SBits Unsigned v -> SBits Signed v
+promoteUnsigned = SBits . (++[0]) . unWrap
+
+-- | Exact conversion, i.e. keeps the same physical representation but converts
+--   between two's complement and regular binary
 convertSign :: SBits s v -> SBits t v
 convertSign = SBits . unWrap
 
