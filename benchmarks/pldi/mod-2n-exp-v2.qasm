@@ -97,9 +97,11 @@ def cSWAP(qubit ctl, qubit[n] A, qubit[n] B) {
 
 def minv(uint[n] a)-> uint[n] {
   uint[n] ret = 1;
+  bool flag = false;
   for uint i in [1:2**n]{      
-    if (a * i ==  1){
+    if (((a * i) % 2**n) == 1 && flag == false){
       ret = i;
+      flag == true;
     }
   }
   return ret;

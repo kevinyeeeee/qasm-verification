@@ -1040,7 +1040,7 @@ simSymbolicAssign p offset typ expr = do
       let n            = length polyl
           (qreg, creg) = splitAt (if density then 2*qwidth else qwidth) out
           oldList      = drop (fromInteger offset) . take (fromInteger offset + n) $ creg
-          newList      = zipWith (\old new -> p*new + (1+p)*old) oldList polyl
+          newList      = zipWith (\old new -> p*new + (1+p)*old) oldList (polyl ++ repeat 0)
           newCreg      = take (fromInteger offset) creg ++ newList ++ drop (fromInteger offset + n) creg in
         env { pathsum = ps { outVals = qreg ++ newCreg } }
 

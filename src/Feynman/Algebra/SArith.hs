@@ -27,24 +27,20 @@ import Feynman.Algebra.Polynomial.Multilinear
  Core types
  ----------------------------}
 
--- | Symbolic (bit-blasted) integers. The lowest-order bit is the first bit
+-- | Symbolic (bit-blasted) uintegers. The lowest-order bit is the first bit
 type SInt v = [SBool v]
 
 {---------------------------
  Utilities
  ----------------------------}
 
--- | Returns the sign bit
-getSign :: SInt v -> SBool v
-getSign = head . reverse
-
 -- | Returns the width of an SInt
 getWidth :: SInt v -> Int
-getWidth = (\a -> a - 1) . length
+getWidth = length
 
--- | Truncates or extends a symbolic uint to /n/ bits + sign bit
+-- | Truncates or extends a symbolic uint to /n/ bits
 setWidth :: MVar v => SInt v -> Int -> SInt v
-setWidth sa n = take (n+1) sa ++ (replicate ((n+1) - length sa) (getSign sa))
+setWidth sa n = take n sa ++ (replicate (n - length sa) (0))
 
 -- | Unifies the length of two symbolic integers
 unifyWidth :: MVar v => SInt v -> SInt v -> (SInt v, SInt v)
@@ -72,16 +68,13 @@ makeSNat i
 
 -- | Converts a constant bit-blasted integer back to an integer
 toNat :: MVar v => SInt v -> Maybe Integer
-toNat si = liftM (shiftSign . bitsToInt) $ mapM takeConstant si where
+toNat si = liftM (bitsToInt) $ mapM takeConstant si where
   takeConstant p = case isConstant p of
     True  -> Just $ getConstant p
     False -> Nothing
 
   bitsToInt :: [FF2] -> Integer
   bitsToInt bits = foldr (+) 0 $ [if testFF2 b then 1 `shiftL` i else 0 | (i,b) <- zip [0..] bits]
-
-  shiftSign :: Integer -> Integer
-  shiftSign res = if getSign si /= 0 then res - (1 `shiftL` (length si)) else res
 
 -- | Checks whether a symbolic uint is a constant value
 isNat :: MVar v => SInt v -> Bool
@@ -128,19 +121,17 @@ sLShift x = foldr go x . zip [0..] where
 -- | Bitshift right (toward lower place bits)
 sRShift :: MVar v => SInt v -> SInt v -> SInt v
 sRShift x = foldr go x . zip [0..] where
-  go (i,bit) x = ite bit (drop (1 `shiftL` i) x ++ [getSign x]) x
+  go (i,bit) x = ite bit (drop (1 `shiftL` i) x ++ [0]) x
 
 sLRot :: MVar v => SInt v -> SInt v -> SInt v
-sLRot x y = (foldr go x' $ zip [1 `shiftL` i | i <- [0..]] y) ++ [getSign x] where
+sLRot x y = (foldr go x $ zip [1 `shiftL` i | i <- [0..]] y) where
   go (i,bit) x = ite bit (drop (n-i) x ++ take (n-i) x) x
   n  = getWidth x
-  x' = reverse $ tail $ reverse x
 
 sRRot :: MVar v => SInt v -> SInt v -> SInt v
-sRRot x y = (foldr go x' $ zip [1 `shiftL` i | i <- [0..]] y) ++ [getSign x] where
+sRRot x y = (foldr go x $ zip [1 `shiftL` i | i <- [0..]] y) where
   go (i,bit) x = ite bit (drop i x ++ take i x) x
   n  = length x
-  x' = reverse $ tail $ reverse x
 
 sPopcount :: MVar v => SInt v -> SInt v
 sPopcount s = foldl sPlus (replicate (length s) 0) $ map (\a -> [a,0]) $ s
@@ -166,13 +157,10 @@ sPlus s t = go 0 $ extend $ unifyWidth s t where
 sNeg :: MVar v => SInt v -> SInt v
 sNeg s = setWidth (sPlus (makeSNat 1) (sNot s)) (getWidth s)
 
--- | Absolute value of a number
-sAbs :: MVar v => SInt v -> SInt v
-sAbs s = ite (getSign s) (sNeg s) s
-
 -- | Subtraction mod 2^n
 sMinus :: MVar v => SInt v -> SInt v -> SInt v
-sMinus s t = sPlus s (sNeg t)
+sMinus s t = sPlus s' (sNeg t') where
+  (s',t') = unifyWidth s t
 
 -- | Multiplication mod 2^n
 sMult :: MVar v => SInt v -> SInt v -> SInt v
@@ -195,15 +183,15 @@ sDiv s t | all (== 0) t = error "Divide by 0"
 
 -- | Quotient mod 2^n
 sQuot :: MVar v => SInt v -> SInt v -> SInt v
-sQuot s t = ite (getSign s' + getSign t') (sNeg res) res where
-  res     = setWidth (fst $ sDiv (sAbs s') (sAbs t')) n
+sQuot s t = res where
+  res     = setWidth (fst $ sDiv s' t') n
   (s',t') = unifyWidth s t
   n       = getWidth s'
 
 -- | Quotient mod 2^n
 sMod :: MVar v => SInt v -> SInt v -> SInt v
-sMod s t = ite (getSign s') (sNeg res) res where
-  res     = setWidth (snd $ sDiv (sAbs s') (sAbs t')) n
+sMod s t = res where
+  res     = setWidth (snd $ sDiv s' t') n
   (s',t') = unifyWidth s t
   n       = getWidth s'
 
@@ -243,18 +231,12 @@ compByIndex f s t = go . rev $ unifyWidth s t
     iff p q         = 1 + p + q
 
 sLT :: MVar v => SInt v -> SInt v -> SBool v 
-sLT a b = ltSgn + (1+gtSgn)*(compByIndex lt a b)
-  where
-    ltSgn  = (getSign a)*(1 + getSign b)
-    gtSgn  = (1 + getSign a)*(getSign b)
-    lt p q = (1+p)*q
+sLT a b = compByIndex lt a b
+  where lt p q = (1+p)*q
 
 sGT :: MVar v => SInt v -> SInt v -> SBool v 
-sGT a b = gtSgn + (1+ltSgn)*(compByIndex gt a b)
-  where
-    ltSgn  = (getSign a)*(1 + getSign b)
-    gtSgn  = (1 + getSign a)*(getSign b)
-    gt p q = p*(1+q)
+sGT a b = compByIndex gt a b
+  where gt p q = p*(1+q)
 
 sLEq :: MVar v => SInt v -> SInt v -> SBool v 
 sLEq s t = 1 + sGT s t

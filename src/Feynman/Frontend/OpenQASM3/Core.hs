@@ -342,7 +342,12 @@ prettyPrintStmt stmt = case stmt of
   SPragma _ str -> ["pragma " ++ str]
 
 prettyPrintAnnotation :: Annotation a -> String
-prettyPrintAnnotation = error "TODO"
+prettyPrintAnnotation a = case a of
+  Other (s1, s2) -> s1 ++ " " ++ s2
+  Assert xs      -> "@assert " ++ showAssertion xs
+  Fn    (e1, e2) -> prettyPrintExpr e1 ++ " -> " ++ prettyPrintExpr e2
+  Triple pre post _ -> "@pre " ++ showAssertion pre ++ "\n@post " ++ showAssertion post
+  where showAssertion xs = intercalate ", " [prettyPrintAP a ++ " ~> " ++ prettyPrintExpr b | (a,b) <- xs]
 
 -- | Pretty prints a declaration
 prettyPrintDecl :: Decl a -> [String]
@@ -424,6 +429,16 @@ prettyPrintExpr expr = case expr of
           e' = prettyPrintExpr expr'
   EStmt _ stmt -> concat $ prettyPrintStmt stmt
   ECast _ typexpr expr -> prettyPrintType typexpr ++ "(" ++ prettyPrintExpr expr ++ ")"
+  EVarDec _ v typexpr -> v ++ " : " ++ prettyPrintType typexpr
+  Ket _ expr -> "|" ++ prettyPrintExpr expr ++ ">"
+  Fun _ args expr -> "fun{" ++ intercalate "," (map printArg args) ++ "}." ++ prettyPrintExpr expr
+  Sum _ args expr -> "sum{" ++ intercalate "," (map printArg args) ++ "}." ++ prettyPrintExpr expr
+  Tensor _ e1 e2 -> prettyPrintExpr e1 ++ "," ++ prettyPrintExpr e2
+  Compose _ e1 e2 -> prettyPrintExpr e1 ++ " " ++ prettyPrintExpr e2
+  Dagger _ expr -> prettyPrintExpr expr ++ "*"
+  where printArg (id, mtyp) = case mtyp of
+          Nothing  -> id
+          Just typ -> id ++ ":" ++ prettyPrintType typ
 
 -- | Pretty prints an access path
 prettyPrintAP :: AccessPath a -> String
