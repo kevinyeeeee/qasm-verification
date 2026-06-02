@@ -287,7 +287,7 @@ measurePS :: Int -> Env -> Env
 measurePS _      env@(Env _ _ _ False _)      = error "not density matrix"
 measurePS offset env@(Env ps _ _ True qwidth) = env { pathsum = ps' }
   where
-    ps' = applyMeasure offset (offset + qwidth) ps
+    ps' = grind $ applyMeasure offset (offset + qwidth) ps
 
 bindParams :: [(ID, Type)] -> [Value] -> Simulator ()
 bindParams params args = mapM_ bindParam $ zip params args
@@ -698,6 +698,7 @@ verifyDef' id pre post refs bindings body = do
     False -> do
       end <- liftIO $ getCPUTime
       liftIO $ putStrLn $ "  Failed (" ++ (format start middle end count) ++")"
+      liftIO $ putStrLn $ "    initial:  " ++ show (grind preSum)
       liftIO $ putStrLn $ "    expected: " ++ show (grind postPS)
       liftIO $ putStrLn $ "    got:      " ++ show (grind prePS)
       return Nothing
@@ -721,7 +722,7 @@ verifyDef' id pre post refs bindings body = do
       qwidth <- getQWidth
       let offsets' = if isQuantum (typeof path) then offsets ++ (map (+qwidth) offsets) else offsets
       env <- get
-      modify $ \env -> env { pathsum = applyOn t offsets' (pathsum env) }
+      modify $ \env -> env { pathsum = grind $ applyOn t offsets' (pathsum env) }
       return eqRef
 
     applyRefinement ref = do
@@ -786,7 +787,7 @@ simKet n expr = case expr of
         k <- simKet n e2
         let pred = Pathsum 0 0 0 0 (lift $ ofVar (FVar "%%%") * (1+pp) ) []
         return $ sumover ["%%%"] (pred <> k)
-      _ -> liftM2 (<>) (simKet Nothing e1) (simKet Nothing e2)
+      _ -> liftM2 (<>) (simKet (getSize e1) e1) (simKet (getSize e2) e2)
   Sum _ svars e           -> do
     let (ids, typs) = unzip svars
     typs <- mapM (traverse $ typeExprToType) typs
@@ -826,6 +827,13 @@ simKet n expr = case expr of
     ps2 <- simKet n e2
     return $ ps1 + ps2
   EBOp _ e1 TimesOp e2 -> liftM2 (<>) (simKet Nothing e1) (simKet Nothing e2)
+  where getSize e = case typeof e of
+          TQReg n -> Just (fromIntegral n)
+          TQBit   -> Just 1
+          TCReg n -> Just (fromIntegral n)
+          TBool   -> Just 1
+          TUInt n -> liftM fromIntegral $ n
+          _       -> Nothing
 
 exprToDyadicPoly :: Expr ElaboratedType -> Simulator (PseudoBoolean Var DyadicRational)
 exprToDyadicPoly e = case typeof e of
@@ -1029,16 +1037,15 @@ simSymbolicAssign :: SBool Var -> Integer -> Type -> Expr ElaboratedType -> Simu
 simSymbolicAssign p offset typ expr = do
   v <- reduceExpr expr
   case (typ, v) of
-    (TBool  , VPoly poly ) -> modify $ f [poly]
-    (TBool  , VBool False) -> modify $ f [0]
-    (TBool  , VBool True ) -> modify $ f [1]
-    (TCReg n, VPolyList l) -> modify $ f l 
-    (TUInt n, v)           -> getPolyListOfValue v >>= \l -> modify $ f (fromJust l)
+    (TBool  , VPoly poly ) -> modify $ f 1 [poly]
+    (TBool  , VBool False) -> modify $ f 1 [0]
+    (TBool  , VBool True ) -> modify $ f 1 [1]
+    (TCReg n, VPolyList l) -> modify $ f (fromInteger n) l 
+    (TUInt (Just n), v)           -> getPolyListOfValue v >>= \l -> modify $ f (fromInteger n) (fromJust l)
     (t, v) -> error $ show t ++ " " ++ show v
   where
-    f polyl env@(Env ps@(Pathsum _ _ _ _ _ out) _ _ density qwidth) =
-      let n            = length polyl
-          (qreg, creg) = splitAt (if density then 2*qwidth else qwidth) out
+    f n polyl env@(Env ps@(Pathsum _ _ _ _ _ out) _ _ density qwidth) =
+      let (qreg, creg) = splitAt (if density then 2*qwidth else qwidth) out
           oldList      = drop (fromInteger offset) . take (fromInteger offset + n) $ creg
           newList      = zipWith (\old new -> p*new + (1+p)*old) oldList (polyl ++ repeat 0)
           newCreg      = take (fromInteger offset) creg ++ newList ++ drop (fromInteger offset + n) creg in
@@ -1179,10 +1186,10 @@ stdlib = ["x", "y", "z", "h", "cx", "cy", "cz", "ch", "id", "s", "sdg", "t", "td
 applyPS :: Pathsum DMod2 -> SBool Var -> [Int] -> Simulator ()
 applyPS gatePS p offsets = modify $ f
   where
-    f env@(Env ps _ _ False _) = env { pathsum = applyPControlled gatePS p offsets ps }
+    f env@(Env ps _ _ False _) = env { pathsum = grind $ applyPControlled gatePS p offsets ps }
     f env@(Env ps _ _ True qwidth) = 
       let offsets' = map (+qwidth) offsets in
-        env { pathsum = applyPControlled (conjugate gatePS) p offsets' . applyPControlled gatePS p offsets $ ps }
+        env { pathsum = grind $ applyPControlled (conjugate gatePS) p offsets' . applyPControlled gatePS p offsets $ ps }
 
 applyModifiers :: Pathsum DMod2 -> [Modifier ElaboratedType] -> Simulator (Pathsum DMod2)
 applyModifiers = foldM applyModifier
@@ -1230,7 +1237,7 @@ simExpr p (ECall _ fid args) = do
       let qoffsets' = concat [i | Just i <- qoffsets]
           coffsets' = concat [i | Just i <- coffsets]
           offsets   = qoffsets' ++ (map (+qwidth) qoffsets') ++ coffsets'
-      modify $ \env -> env { pathsum = applyOn summ offsets (pathsum env) }
+      modify $ \env -> env { pathsum = grind $ applyOn summ offsets (pathsum env) }
       return Nothing
     Nothing                      -> do
       env <- get
@@ -1298,9 +1305,9 @@ simReset expr = case expr of
       Just (Symbolic (TQReg n) offset) -> mapM_ modify [resetOffset i | i <- [offset..offset+(fromInteger n)-1] ] 
   where
     resetOffset offset env@(Env ps@(Pathsum _ _ _ _ _ out) _ _ False _)     =
-      env { pathsum = resetPS (fromInteger offset) ps }
+      env { pathsum = grind $ resetPS (fromInteger offset) ps }
     resetOffset offset env@(Env ps@(Pathsum _ _ _ _ _ out) _ _ True qwidth) =
-      env { pathsum = resetPS ((fromInteger offset) + qwidth) . resetPS (fromInteger offset) $ ps }
+      env { pathsum = grind $ resetPS ((fromInteger offset) + qwidth) . resetPS (fromInteger offset) $ ps }
 
     resetPS offset ps@(Pathsum _ _ _ _ _ out) = ps { outVals = newOut }
       where

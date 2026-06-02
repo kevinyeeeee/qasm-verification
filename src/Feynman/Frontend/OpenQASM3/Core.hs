@@ -445,6 +445,7 @@ prettyPrintAP :: AccessPath a -> String
 prettyPrintAP ap = case ap of
   AVar _ var       -> var
   AIndex _ var idx -> var ++ "[" ++ prettyPrintExpr idx ++ "]"
+  AList _ xs       -> intercalate ", " $ map prettyPrintAP xs
   
 -- | Pretty prints a gate modifier
 prettyPrintMod :: Modifier a -> String

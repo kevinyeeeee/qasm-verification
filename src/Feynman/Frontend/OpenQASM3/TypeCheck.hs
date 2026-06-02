@@ -725,6 +725,7 @@ tcExpr expr0 = case expr0 of
       TInt _  -> case value . getAnnotation $ expr of
         Just 0 -> return $ Ket (pureType TQBit) (EBool (pureType TBool) False)
         Just 1 -> return $ Ket (pureType TQBit) (EBool (pureType TBool) True)
+        _      -> error $ show expr
       _       -> error $ show expr
 
   Fun _ _ _ -> error "TODO"
@@ -736,6 +737,7 @@ tcExpr expr0 = case expr0 of
     let binds = zip ids bindTypes
     pushScope
     mapM (\(id, ty) -> assign id (pureType ty)) binds
+    modifyConstraint (\_ -> Just c)
     expr <- tcExpr expr
     popScope
     let binds = zip ids (fmap (Just . asTypeExpr') bindTypes)
