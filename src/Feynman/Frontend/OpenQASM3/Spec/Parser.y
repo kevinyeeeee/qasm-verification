@@ -1,5 +1,5 @@
 {
-  module Feynman.Frontend.OpenQASM3.Spec.Parser(parseAssertion,parseSExpr) where
+  module Feynman.Frontend.OpenQASM3.Spec.Parser(parseFunction,parseAssertion,parseSExpr) where
 
 import Feynman.Frontend.OpenQASM3.Spec.Lexer
 import qualified Feynman.Frontend.OpenQASM3.Spec.Lexer as L

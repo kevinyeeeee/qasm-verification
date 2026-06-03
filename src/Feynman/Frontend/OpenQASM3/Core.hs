@@ -748,20 +748,20 @@ translateModifier node = case node of
 
   _  -> Left (Err $ "Fatal: malformed modifier node (" ++ show node ++ ")")
 
-translateAnnotations :: [S.ParseNode] -> Either ErrMsg [Annotation S.SourceRef]
-translateAnnotations nodes = case nodes of
+translateAnnotations :: Stmt Location -> [S.ParseNode] -> Either ErrMsg [Annotation S.SourceRef]
+translateAnnotations stmt nodes = case nodes of
   (S.Node (S.Annotation "pre" str _) [] c):
     (S.Node (S.Annotation "post" str' _) [] c'):
     ns ->
       let preAssertions  = SpecParser.parseAssertion . SpecLexer.lexer $ str
           postAssertions = SpecParser.parseAssertion . SpecLexer.lexer $ str' in do
-        rest <- translateAnnotations ns
+        rest <- translateAnnotations stmt ns
         let (preAssertions', preRefinements)   = translateAssertions c preAssertions
             (postAssertions', postRefinements) = translateAssertions c postAssertions in
           return $ Triple preAssertions' postAssertions' (preRefinements ++ postRefinements) : rest
   node:ns -> do
-    annot <- translateAnnotation node
-    rest <- translateAnnotations ns
+    annot <- translateAnnotation stmt node
+    rest <- translateAnnotations stmt ns
     return $ annot : rest
   [] -> return []
   where 
@@ -773,17 +773,32 @@ translateAnnotations nodes = case nodes of
     go c (as, rs) (Spec.Pure e)          = (as , rs ++ [exprFromSpec c e])
 
 -- | Translation of Annotations
-translateAnnotation :: S.ParseNode -> Either ErrMsg (Annotation S.SourceRef)
-translateAnnotation node = case node of
+translateAnnotation :: Stmt Location -> S.ParseNode -> Either ErrMsg (Annotation S.SourceRef)
+translateAnnotation stmt node = case node of
   S.Node (S.Annotation "assert" str _) [] c -> 
     let assertions = SpecParser.parseAssertion (SpecLexer.lexer str) in
     Right (Assert (translateAssertions c assertions))
-  S.Node (S.Annotation "fn" str _) [] c -> return (Fn (error "TODO"))
+  S.Node (S.Annotation "unitary" str _) [] c ->
+    let (Spec.Mapping e1 e2) = SpecParser.parseFunction (SpecLexer.lexer str)
+        e1lst = expand $ exprFromSpec c e1
+        e2lst = expand $ exprFromSpec c e2
+        aplst = getArgList stmt
+    in
+      return $ Triple (zip aplst e1lst) (zip aplst e2lst) []
+    --Right (Fn (exprFromSpec c e1, exprFromSpec c e2))
   S.Node (S.Annotation a str _) [] c -> return (Other (a,str))
   _  -> Left (Err $ "Fatal: malformed annotation node (" ++ show node ++ ")")
   where 
     translateAssertions c assertions = 
       fmap ((\(Spec.Pointsto lvl e2) -> (accessPathFromSpec c lvl,exprFromSpec c e2))) assertions
+    expand e = case e of
+      Ket c e        -> map (Ket c) $ expand e
+      Tensor _ e1 e2 -> expand e1 ++ expand e2
+      _              -> [e]
+    getArgList stmt = case stmt of
+      SDeclare c (DGate var cp qp body) -> map (AVar c) $ cp ++ qp
+      SDeclare c (DDef var params ret body) -> map (AVar c) $ fst $ unzip $ params
+      _ -> []
 
 
 -- | Translation of Arguments
@@ -806,8 +821,8 @@ translateStmt node = case node of
   S.Node S.Statement [stmt] c -> translateStmt stmt
 
   S.Node S.Statement (stmt:xs) c -> do
-    annots <- translateAnnotations xs
     s <- translateStmt stmt
+    annots <- translateAnnotations s xs
     return $ SAnnotated c annots s
 
   S.Node S.Scope stmts c -> do
