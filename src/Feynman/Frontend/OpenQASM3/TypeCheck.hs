@@ -72,6 +72,7 @@ asTypeExpr' = asTypeExpr (pureType $ TUInt Nothing)
 -- | Type checking environment, consisting of bindings to
 --   elaborate types and a list of error messages
 data Env = Env { scopes :: [Map ID ElaboratedType],
+                 annots :: Map ID ElaboratedType,
                  errs  :: [ErrMsg],
                  constraints :: TypeConstraints
                } deriving (Show)
@@ -81,11 +82,11 @@ type TC = State Env
 
 -- | The empty environment
 emptyEnv :: Env
-emptyEnv = Env [Map.empty] [] ConsTop
+emptyEnv = Env [Map.empty] Map.empty [] ConsTop
 
 -- | Environment pre-populated with built in gates
 initEnv :: Env
-initEnv = Env [fmap constType $ Map.fromList stdTypes] [] ConsTop
+initEnv = Env [fmap constType $ Map.fromList stdTypes] Map.empty [] ConsTop
 
 -- | Modifies the output type constraints
 modifyConstraint :: (TypeConstraints -> Maybe TypeConstraints) -> TC () 
@@ -195,6 +196,8 @@ assign var typ = do
     Nothing -> put $ env{scopes = (Map.insert var typ . head $ scopes env):(tail $ scopes env)}
     Just _  -> do
       logMsg $ "Error: Declaration of " ++ var ++ " shadows existing declaration"
+      logMsg $ "       Relevant context: " ++ show env
+      logMsg $ "       Variable: " ++ show var
       return ()
 
 -- | Types of the standard library gates
@@ -433,17 +436,19 @@ tcDecl decl = case decl of
     let params = zip ids paramTypes
     ret <- mapM resolveType ret
     let fTyp = TProc paramTypes ret
-    scopes <- openProcScope $ (var,fTyp):params
+    lscope <- openProcScope $ (var,fTyp):params
+    modify $ \env -> env { scopes = (annots env):(scopes env) }
     body <- tcStmt body
-    closeProcScope scopes
+    closeProcScope lscope
     assign var (constType fTyp)
     return  $ DDef var (map (fmap asTypeExpr') params) (fmap asTypeExpr' ret) body
 
   DGate var cparams qparams body -> do
     let fTyp = TGate (length cparams) (length qparams)
-    scopes <- openProcScope $ [(var,fTyp)] ++ (zip cparams $ repeat (TAngle Nothing)) ++ (zip qparams $ repeat TQBit)
+    lscope <- openProcScope $ [(var,fTyp)] ++ (zip cparams $ repeat (TAngle Nothing)) ++ (zip qparams $ repeat TQBit)
+    modify $ \env -> env { scopes = (annots env):(scopes env) }
     body <- tcStmt body
-    closeProcScope scopes
+    closeProcScope lscope
     assign var (constType fTyp)
     return  $ DGate var cparams qparams body
 
@@ -591,9 +596,13 @@ tcAnnotation stmt (Triple pre post refs) = case stmt of
     let (ids, typeExprs) = unzip params
     types <- mapM resolveType typeExprs
     scope <- openProcScope (zip ids types)
+    -- Hack for passing declarations in annotations through
+    pushScope
     pre <- mapM tcEq pre
     post <- mapM tcEq post
     refs <- mapM tcExpr refs
+    annotScope <- gets (head . scopes)
+    modify $ \env -> env { annots = annotScope }
     closeProcScope scope
     return (Triple pre post refs)
 
@@ -720,6 +729,7 @@ tcExpr expr0 = case expr0 of
         ConsQReg i -> Just $ ConsCReg i
         _          -> Just c)
     expr <- tcExpr expr
+    env <- get
     case typeof expr of
       TBool          -> return $ Ket (pureType TQBit) expr
       TCReg n        -> return $ Ket (pureType (TQReg n)) expr
@@ -728,7 +738,7 @@ tcExpr expr0 = case expr0 of
         Just 0 -> return $ Ket (pureType TQBit) (EBool (pureType TBool) False)
         Just 1 -> return $ Ket (pureType TQBit) (EBool (pureType TBool) True)
         _      -> return $ Ket (pureType t) expr
-      _       -> error $ show expr
+      _       -> error $ "Loc: " ++ show loc ++ ", invalid type of ket: " ++ show expr ++ "\n  error messages: " ++ concat (map (\s -> "\n" ++ show s) (errs env)) ++ "\n\nEnv: " ++ show (scopes env)
 
   Fun _ _ _ -> error "TODO"
 
@@ -905,8 +915,8 @@ resolveType typ = case typ of
 -- | Type checks a program and converts the result into an alternative
 tcQasm :: Prog Location -> Either [ErrMsg] (Prog ElaboratedType)
 tcQasm prog = case runState (tcProg prog) initEnv of
-  (prog, Env _ [] _) -> Right prog
-  (_, Env _ xs _)    -> Left xs
+  (prog, Env _ _ [] _) -> Right prog
+  (_, Env _ _ xs _)    -> Left xs
 
 -- | Prints out the list of error messages
 printErrors :: [ErrMsg] -> IO ()
