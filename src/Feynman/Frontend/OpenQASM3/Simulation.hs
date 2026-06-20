@@ -678,7 +678,10 @@ verifyDef' id pre post refs bindings body = do
   modify $ \env -> (initEnv True) { globals = globals env }
   eqRefs <- applyPre 
   preSum <- gets pathsum 
-  do { mapM applyRefinement refs; mapM applyEqRef eqRefs; simStmt 1 body }
+  mapM applyEqRef eqRefs
+  refinedPreSum <- gets pathsum
+  mapM applyRefinement refs
+  do { simStmt 1 body }
   prePS <- traceExcept outPaths
   modify $ \env -> env { pathsum = mempty, qwidth = 0, binds = Map.empty : binds env }
   applyPost
@@ -694,7 +697,7 @@ verifyDef' id pre post refs bindings body = do
     True -> do
       end <- liftIO $ getCPUTime
       liftIO $ putStrLn $ "  Success (" ++ (format start middle end count) ++")"
-      return $ Just $ sumAll (postSum <> dagger preSum)
+      return $ Just $ grind (sumAll (postSum <> dagger refinedPreSum))
     False -> do
       end <- liftIO $ getCPUTime
       liftIO $ putStrLn $ "  Failed (" ++ (format start middle end count) ++")"
@@ -1223,12 +1226,6 @@ simExpr p (ECall _ fid args) = do
   bind <- searchBinding fid
   args' <- (liftM $ map fromJust) $ mapM (simExpr p) args
   case bind of
-    Just (Block _ params _ body _) -> do
-      pushEmptyEnv
-      bindParams params args'
-      ret <- simStmt p body
-      popEnv
-      return ret
     Just (Block _ params _ body (Just summ)) -> do
       qoffsets <- mapM getQVarOffsets args'
       coffsets <- mapM getCVarOffsets args'
@@ -1239,6 +1236,12 @@ simExpr p (ECall _ fid args) = do
           offsets   = qoffsets' ++ (map (+qwidth) qoffsets') ++ coffsets'
       modify $ \env -> env { pathsum = grind $ applyOn summ offsets (pathsum env) }
       return Nothing
+    Just (Block _ params _ body _) -> do
+      pushEmptyEnv
+      bindParams params args'
+      ret <- simStmt p body
+      popEnv
+      return ret
     Nothing                      -> do
       env <- get
       error $ "binding not found: " ++ show (binds env)
