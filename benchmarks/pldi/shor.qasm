@@ -311,11 +311,10 @@ def shorc(uint[n] A, qubit[n] B, qubit[n] C, qubit[n] ANC1, qubit[n] ANC2, qubit
   iqft(B);
 }
 
-//@pre  A ~> a:uint[n] { a % 2 == 1}, B ~> |0>, C ~> |0>, ANC1 ~> |0>, ANC2 ~> |0>, X ~> |0>
-//@post B ~> sum{b:uint[n]{b < order(a)}}.|b * ((2^n) / order(a))>
-//def shord(uint[n] A, qubit[n] B, qubit[n] C, qubit[n] ANC1, qubit[n] ANC2, qubit X) {
-//  h B;
-//  modExp(A, B, C, ANC1, ANC2, X);
-//  iqft(B);
-//  measure C;
-//}
+@pre  A ~> a:uint[n] { a % 2 == 1}, B ~> |0>, C ~> |0>, ANC1 ~> |0>, ANC2 ~> |0>, X ~> |0>
+@post (B,C) ~> sum{b:uint[n]{b < order(a)},c:uint[n]{c < order(a)}}.exp(-2*b*c/order(a))|b * ((2^n) / order(a)), a^c>
+def shord(uint[n] A, qubit[n] B, qubit[n] C, qubit[n] ANC1, qubit[n] ANC2, qubit X) {
+  h B;
+  modExp(A, B, C, ANC1, ANC2, X);
+  iqft(B);
+}

@@ -38,8 +38,6 @@ import Feynman.Algebra.Polynomial.Univariate (Cyclotomic, unity, constCyc)
 import qualified Feynman.Algebra.Polynomial.Univariate as Uni
 import Feynman.Algebra.Polynomial.Multilinear
 
-import qualified Debug.Trace as Trace
-
 {-----------------------------------
  Variables
  -----------------------------------}
@@ -682,6 +680,17 @@ applyReset i j (Pathsum s d o p pp ovals) = Pathsum (s+2) d o (p+1) pp' ovals' w
   y           = ofVar $ PVar p
   ovals'      = resetAt j . resetAt i $ ovals
   resetAt k l = take k l ++ [0] ++ drop (k+1) l
+
+-- | Trace out a qubit in a vectorized density matrix.
+traceMany :: (Eq g, Abelian g) => [(Int,Int)] -> Pathsum g -> Pathsum g
+traceMany xs sop@(Pathsum s d o p pp ovals) = Pathsum s' d o' p' pp' ovals' where
+  m = length xs
+  s' = s + 2*m
+  o' = length ovals'
+  p' = p + m
+  pp' = pp + (foldr (+) 0 $ map (\(i,(j,k)) -> lift $ (ofVar $ PVar i) * (ovals!!j + ovals!!k)) $ zip [p..] xs)
+  traced = Set.fromList . concatMap (\(i,j) -> [i,j]) $ xs
+  ovals' = snd . unzip . filter (\x -> not $ Set.member (fst x) traced) $ zip [0..] ovals
   
 {----------------------------
  Bind, unbind, and subst

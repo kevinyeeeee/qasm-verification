@@ -343,9 +343,9 @@ prettyPrintStmt stmt = case stmt of
 
 prettyPrintAnnotation :: Annotation a -> String
 prettyPrintAnnotation a = case a of
-  Other (s1, s2) -> s1 ++ " " ++ s2
+  Other (s1, s2) -> "@" ++ s1 ++ " " ++ s2
   Assert xs      -> "@assert " ++ showAssertion xs
-  Fn    (e1, e2) -> prettyPrintExpr e1 ++ " -> " ++ prettyPrintExpr e2
+  Fn    (e1, e2) -> prettyPrintExpr e1 ++ " --> " ++ prettyPrintExpr e2
   Triple pre post _ -> "@pre " ++ showAssertion pre ++ "\n@post " ++ showAssertion post
   where showAssertion xs = intercalate ", " [prettyPrintAP a ++ " ~> " ++ prettyPrintExpr b | (a,b) <- xs]
 

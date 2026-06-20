@@ -1,9 +1,10 @@
 module Feynman.Frontend.OpenQASM3.Simulation where
 
 import Control.Monad.State.Strict hiding (lift)
-import Data.Map (Map)
+import Data.Map (Map, (!))
 import qualified Data.Map as Map
 import Data.Maybe (fromJust, fromMaybe)
+import Data.List ((\\), sortBy)
 import qualified Data.List as List
 import Feynman.Algebra.Base (DMod2, DyadicRational, fromDyadic, toDyadic)
 import Feynman.Algebra.SArith
@@ -652,6 +653,9 @@ simAnnotated p annots stmt = case stmt of
         return Nothing
   SDeclare _ decl@(DGate _ cparams _ _  ) ->
     error "cannot verify gate with angles parameters"
+  SWhile _ cond body -> do
+    simWhileWithInv (getInv annots) p cond body
+    return Nothing
   _               -> simStmt p stmt
   where
     (pre, post, refs) = case List.find (\a -> case a of
@@ -659,9 +663,104 @@ simAnnotated p annots stmt = case stmt of
       _            -> False ) annots of
         Just (Triple pre post refs) -> (pre, post, refs)
         _                           -> ([] , []  , []  )
+    getInv []     = error "Loop annotation is not an invariant"
+    getInv (x:xs) = case x of
+      Assert a -> a
+      _        -> getInv xs
+      
 
 verifyAssert :: [(AccessPath a, Expr a)] -> Simulator ()
 verifyAssert conds = error "TODO"
+
+simWhileWithInv :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> SBool Var -> Expr ElaboratedType -> Stmt ElaboratedType -> Simulator ()
+simWhileWithInv inv p cond body = do
+  liftIO $ putStrLn $ "Verifying loop.."
+  ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) inv
+  let invPS = qPS <> (conjugate (renameKet qPS)) <> cPS
+  --liftIO $ putStrLn $ "While invariant: " ++ show qPS ++ " <> " ++ show cPS
+  --liftIO $ putStrLn $ "As density operator: " ++ show invPS
+  currentPS <- gets pathsum
+  --liftIO $ putStrLn $ "Current pathsum: " ++ show currentPS
+  qindices <- liftM concat $ mapM offsetListOfPath qAP
+  cindices <- liftM concat $ mapM offsetListOfPath cAP
+  n <- getQWidth
+  let m = outDeg currentPS
+  let k = length qindices
+  let qtList = [0..n-1] \\ qindices
+  let ctList = [2*n..m-1] \\ cindices
+  let tracedPS = grind $ traceMany (zip qtList (map (+n) qtList) ++ zip ctList ctList) currentPS
+  --liftIO $ putStrLn $ "Traced pathsum: " ++ show tracedPS
+  let sortedQIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip qindices [0..]
+  let sortedCIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip cindices [0..]
+  let perm = Map.fromList ((zip [0..] sortedQIndices) ++ (zip [k..] (map (+k) sortedQIndices)) ++ (zip [2*k..] (map (+ (2*k)) sortedCIndices)))
+  let rearrangedPS = embed tracedPS 0 (perm!) (perm!)
+  --liftIO $ putStrLn $ "Permuted pathsum: " ++ show rearrangedPS
+
+  -- Check that the current state satisfies the invariant
+  let (res,count) = uglyequiv (grind rearrangedPS) (grind invPS)
+  when (not res) $ do
+    liftIO $ putStrLn $ "Error: Initial state failed loop invariant check"
+    liftIO $ putStrLn $ "  Invariant: " ++ show invPS
+    liftIO $ putStrLn $ "  Invariant, reduced: " ++ show (simulate (vectorize $ close invPS) [])
+    liftIO $ putStrLn $ "  Current state: " ++ show rearrangedPS
+    
+  -- Now construct the most general invariant state & apply the body to it
+  --liftIO $ putStrLn $ "while condition: " ++ prettyPrintExpr cond
+  pred <- exprToSBV cond
+  --liftIO $ putStrLn $ "predicate: " ++ show pred
+  let initState = applyInv invPS (qindices ++ (map (+n) qindices) ++ cindices) $ open $ identity (outDeg currentPS)
+  --liftIO $ putStrLn $ "Initial body state: " ++ show (grind $ initState)
+  modify $ \env -> env { pathsum = applyPredicate pred $ initState }
+  simStmt 1 body
+  endPS <- gets pathsum
+  --liftIO $ putStrLn $ "After body: " ++ show (grind $ endPS)
+  let tracedPS' = grind $ traceMany (zip qtList (map (+n) qtList) ++ zip ctList ctList) endPS
+  let rearrangedPS' = embed tracedPS' 0 (perm!) (perm!)
+  --liftIO $ putStrLn $ "Permuted: " ++ show (grind $ rearrangedPS')
+
+  -- Check that the current state satisfies the invariant
+  let (res',count') = uglyequiv (grind rearrangedPS') (grind $ applyPredicate pred invPS)
+  when (not res') $ do
+    liftIO $ putStrLn $ "Error: Loop body failed to preserve invariant"
+    liftIO $ putStrLn $ "  Invariant: " ++ show (grind $ applyPredicate pred invPS)
+    liftIO $ putStrLn $ "  Initial state: " ++ show (applyPredicate pred initState)
+    liftIO $ putStrLn $ "  Output state: " ++ show rearrangedPS'
+
+  -- Construct the result state
+  modify $ \env -> env { pathsum = applyPredicate (1 + pred) $ initState }
+  when (res && res') $ do
+    liftIO $ putStrLn $ "Success!"
+  liftIO $ putStrLn $ ""
+  return ()
+
+  where z' path expr = case typeof path of
+          TQBit   -> liftM Left $ simKet (Just 1) expr
+          TQReg n -> liftM Left $ simKet (Just (fromInteger n)) expr
+          TBool   -> do
+            p <- exprToSBV expr
+            return $ Right $ Pathsum 0 0 1 0 0 [p]
+          TCReg n -> do
+            pl <- exprToSBVList expr
+            return $ Right $ Pathsum 0 0 (fromInteger n) 0 0 (setWidth pl (fromInteger n))
+          TUInt (Just n) -> do
+            pl <- exprToSBVList expr
+            return $ Right $ Pathsum 0 0 (fromInteger n) 0 0 (setWidth pl (fromInteger n))
+          TInt  _ -> liftM (\i -> Left $ ket i) (exprToBoolPolyList expr)
+          e -> error $ show expr
+
+        extendPS :: (([AccessPath ElaboratedType], Pathsum DMod2), ([AccessPath ElaboratedType], Pathsum DMod2)) -> (AccessPath ElaboratedType, Expr ElaboratedType) -> Simulator (([AccessPath ElaboratedType], Pathsum DMod2), ([AccessPath ElaboratedType], Pathsum DMod2))
+        extendPS ((qap, qPS),(cap,cPS)) (path,expr) = do
+          ps <- z' path expr
+          case ps of
+            Left ps'  -> return ((qap++[path],qPS <> ps'), (cap, cPS))
+            Right ps' -> return ((qap,qPS), (cap++[path], cPS <> ps'))
+
+        applyInv :: Pathsum DMod2 -> [Int] -> Pathsum DMod2 -> Pathsum DMod2
+        applyInv inv indices ps = inv { outDeg = n, outVals = ovals' } where
+          n      = outDeg ps
+          ovals' = foldr (\(i,p) -> replace i p) (outVals ps) $ zip indices (outVals inv)
+          replace i v xs = let (b, _:a) = splitAt i xs in b ++ v:a
+          
 
 verifyDef :: ID -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [Expr ElaboratedType] -> [(ID, TypeExpr ElaboratedType)] -> Stmt ElaboratedType -> Simulator (Maybe (Pathsum DMod2))
 verifyDef id pre post refs binds body = do
@@ -678,6 +777,7 @@ verifyDef' id pre post refs bindings body = do
   modify $ \env -> (initEnv True) { globals = globals env }
   eqRefs <- applyPre 
   preSum <- gets pathsum 
+  liftIO $ putStrLn $ "Pre sum " ++ show preSum
   mapM applyEqRef eqRefs
   refinedPreSum <- gets pathsum
   mapM applyRefinement refs
