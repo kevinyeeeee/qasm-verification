@@ -44,7 +44,7 @@ data Env = Env {
 
 data Binding =
     Symbolic { typ :: Type, offset :: Integer }
-  | Scalar { typ :: Type, value :: Value }
+  | Scalar { typ :: Type, value :: Value, annot :: Bool }
   | Block { typ :: Type, params :: [(ID, Type)], returns :: Maybe Type, body :: Stmt ElaboratedType, summary :: Maybe (Pathsum DMod2) }
   | Gate { typ :: Type, gparams :: [ID], gargs :: [ID], body :: Stmt ElaboratedType, summary :: Maybe (Pathsum DMod2)}
   deriving (Show)
@@ -250,6 +250,7 @@ addBinding global id bind =
 
 renameFVar :: Var -> Var
 renameFVar v = case v of
+  FVar ('#':s) -> v
   FVar s -> FVar $ "'" ++ s
   _      -> v
 
@@ -301,7 +302,7 @@ bindParam ((pid, ptype), v) = case (ptype, v) of
   (TCReg n, VCReg o m)   -> bindVar pid $ Symbolic (TCReg n) o
   (TUInt (Just n), VCReg o m) -> bindVar pid $ Symbolic (TUInt $ Just n) o
   (_, _)                 ->
-    bindVar pid $ Scalar ptype v
+    bindVar pid $ Scalar ptype v False
 
 initEnv :: Bool -> Env
 initEnv b = Env (ket []) Map.empty [Map.empty] b 0
@@ -341,7 +342,7 @@ reduceExpr expr = case expr of
     env <- get
     case bind of
       Nothing                    -> error $ "binding not found: " ++ show env
-      Just (Scalar _ e)          -> return e
+      Just (Scalar _ e _)        -> return e
       Just (Symbolic typ offset) -> case typ of
         TCReg n -> return $ VCReg offset n
         TBool   -> return $ VCBit offset
@@ -353,13 +354,13 @@ reduceExpr expr = case expr of
     ty <- typeExprToType typeExpr
     case ty of
       TBool   -> let v = VPoly (ofVar $ FVar vid) in do
-        bindVar vid $ Scalar ty v
+        bindVar vid $ Scalar ty v True
         return $ v
       TCReg n -> let v = VPolyList [ ofVar $ FVar (varOfOffset vid i) | i <- [0..n-1] ] in do
-        bindVar vid $ Scalar ty v
+        bindVar vid $ Scalar ty v True
         return $ v
       TUInt (Just n) -> let v = VPolyList [ ofVar $ FVar (varOfOffset vid i) | i <- [0..n-1] ] in do
-        bindVar vid $ Scalar ty v
+        bindVar vid $ Scalar ty v True
         return $ v
   EIndex _ x i -> do
     x' <- reduceExpr x
@@ -669,18 +670,82 @@ simAnnotated p annots stmt = case stmt of
       _        -> getInv xs
       
 
-verifyAssert :: [(AccessPath a, Expr a)] -> Simulator ()
-verifyAssert conds = error "TODO"
+verifyAssert :: SBool Var -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> Simulator (Bool)
+verifyAssert p conds = do
+  tmpPS <- gets pathsum
+  liftIO $ putStrLn $ "Initial state: " ++ show tmpPS
+  env <- get
+  liftIO $ putStrLn $ "Initial environment: " ++ show env
+  ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) conds
+  let invPS = applyPredicate p $ qPS <> (conjugate (renameKet qPS)) <> cPS
+  --liftIO $ putStrLn $ "While invariant: " ++ show qPS ++ " <> " ++ show cPS
+  --liftIO $ putStrLn $ "As density operator: " ++ show invPS
+  liftIO $ putStrLn $ "Assertion pure: " ++ show (qPS <> cPS)
+  liftIO $ putStrLn $ "Assertion without predicate: " ++ show (qPS <> (conjugate (renameKet qPS)) <> cPS)
+  liftIO $ putStrLn $ "Computed assertion value: " ++ show invPS
+  currentPS <- gets pathsum
+  liftIO $ putStrLn $ "Current pathsum: " ++ show currentPS
+  qindices <- liftM concat $ mapM offsetListOfPath qAP
+  cindices <- liftM concat $ mapM offsetListOfPath cAP
+  n <- getQWidth
+  let m = outDeg currentPS
+  let k = length qindices
+  let qtList = [0..n-1] \\ qindices
+  let ctList = [2*n..m-1] \\ cindices
+  let tracedPS = grind $ traceMany (zip qtList (map (+n) qtList) ++ zip ctList ctList) currentPS
+  liftIO $ putStrLn $ "Traced pathsum: " ++ show tracedPS
+  let sortedQIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip qindices [0..]
+  let sortedCIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip cindices [0..]
+  let perm = Map.fromList ((zip [0..] sortedQIndices) ++ (zip [k..] (map (+k) sortedQIndices)) ++ (zip [2*k..] (map (+ (2*k)) sortedCIndices)))
+  let rearrangedPS = embed tracedPS 0 (perm!) (perm!)
+  liftIO $ putStrLn $ "Permuted pathsum: " ++ show rearrangedPS
 
+  -- Check that the current state satisfies the invariant
+  let (res,count) = uglyequiv (dropScalars $ grind rearrangedPS) (dropScalars $ grind invPS)
+  when (not res) $ do
+    liftIO $ putStrLn $ "Error: Assertion failed"
+    liftIO $ putStrLn $ "  Assertion: " ++ show (dropScalars $ grind $ invPS)
+    liftIO $ putStrLn $ "  Current state: " ++ show (dropScalars $ grind $ rearrangedPS)
+  return res
+
+  where z' path expr = case typeof path of
+          TQBit   -> liftM Left $ simKet (Just 1) expr
+          TQReg n -> liftM Left $ simKet (Just (fromInteger n)) expr
+          TBool   -> do
+            p <- exprToSBV expr
+            return $ Right $ Pathsum 0 0 1 0 0 [p]
+          TCReg n -> do
+            pl <- exprToSBVList expr
+            return $ Right $ Pathsum 0 0 (fromInteger n) 0 0 (setWidth pl (fromInteger n))
+          TUInt (Just n) -> do
+            pl <- exprToSBVList expr
+            return $ Right $ Pathsum 0 0 (fromInteger n) 0 0 (setWidth pl (fromInteger n))
+          TInt  _ -> liftM (\i -> Left $ ket i) (exprToBoolPolyList expr)
+          e -> error $ show expr
+
+        extendPS ((qap, qPS),(cap,cPS)) (path,expr) = do
+          ps <- z' path expr
+          case ps of
+            Left ps'  -> return ((qap++[path],qPS <> ps'), (cap, cPS))
+            Right ps' -> return ((qap,qPS), (cap++[path], cPS <> ps'))
+
+-- Notes:
+--   1. Current generation of invariant states introduces primed classical variables, which may be an issue depending on
+--      when predicates are conjoined
+--   2. To avoid carrying around classical state assertions, may make sense to separate the state and predicate refinements
+--      As it is, if they're not eliminable predicates may not be idempotent:
+--                 e^i{yP} /= e^i{yP + zP}
+--   
 simWhileWithInv :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> SBool Var -> Expr ElaboratedType -> Stmt ElaboratedType -> Simulator ()
 simWhileWithInv inv p cond body = do
   liftIO $ putStrLn $ "Verifying loop.."
+  {-
   ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) inv
   let invPS = qPS <> (conjugate (renameKet qPS)) <> cPS
   --liftIO $ putStrLn $ "While invariant: " ++ show qPS ++ " <> " ++ show cPS
   --liftIO $ putStrLn $ "As density operator: " ++ show invPS
   currentPS <- gets pathsum
-  --liftIO $ putStrLn $ "Current pathsum: " ++ show currentPS
+  liftIO $ putStrLn $ "Current pathsum: " ++ show currentPS
   qindices <- liftM concat $ mapM offsetListOfPath qAP
   cindices <- liftM concat $ mapM offsetListOfPath cAP
   n <- getQWidth
@@ -698,36 +763,77 @@ simWhileWithInv inv p cond body = do
 
   -- Check that the current state satisfies the invariant
   let (res,count) = uglyequiv (grind rearrangedPS) (grind invPS)
+  -}
+  res <- verifyAssert 1 inv
   when (not res) $ do
     liftIO $ putStrLn $ "Error: Initial state failed loop invariant check"
-    liftIO $ putStrLn $ "  Invariant: " ++ show invPS
-    liftIO $ putStrLn $ "  Invariant, reduced: " ++ show (simulate (vectorize $ close invPS) [])
-    liftIO $ putStrLn $ "  Current state: " ++ show rearrangedPS
+    --liftIO $ putStrLn $ "  Invariant: " ++ show invPS
+    --liftIO $ putStrLn $ "  Invariant, reduced: " ++ show (simulate (vectorize $ close invPS) [])
+    --liftIO $ putStrLn $ "  Current state: " ++ show rearrangedPS
     
   -- Now construct the most general invariant state & apply the body to it
+  env' <- get
+  modify $ \env -> (initEnv True) { globals = globals env }
+  initPre env'
+  pred <- exprToSBV cond
+  currentPS <- gets pathsum
+  liftIO $ putStrLn $ "Symbolic starting state: " ++ show currentPS
+  ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) inv
+  let invPS = qPS <> (conjugate (renameKet qPS)) <> cPS
+  qindices <- liftM concat $ mapM offsetListOfPath qAP
+  cindices <- liftM concat $ mapM offsetListOfPath cAP
+  n <- getQWidth
+  let initState = applyInv invPS (qindices ++ (map (+n) qindices) ++ cindices) $ currentPS
+  modify $ \env -> env { pathsum = applyPredicate pred $ initState }
+  currentPS' <- gets pathsum
+  n <- getQWidth
+  env <- get
+  liftIO $ putStrLn $ "Initial (invariant) state: " ++ show currentPS'
+  liftIO $ putStrLn $ "env: " ++ show env
   --liftIO $ putStrLn $ "while condition: " ++ prettyPrintExpr cond
+  {-
   pred <- exprToSBV cond
   --liftIO $ putStrLn $ "predicate: " ++ show pred
+  ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) inv
+  let invPS = qPS <> (conjugate (renameKet qPS)) <> cPS
+  qindices <- liftM concat $ mapM offsetListOfPath qAP
+  cindices <- liftM concat $ mapM offsetListOfPath cAP
+  n <- getQWidth
+  let m = outDeg currentPS
+  let k = length qindices
+  let qtList = [0..n-1] \\ qindices
+  let ctList = [2*n..m-1] \\ cindices
+  let tracedPS = grind $ traceMany (zip qtList (map (+n) qtList) ++ zip ctList ctList) currentPS
+  --liftIO $ putStrLn $ "Traced pathsum: " ++ show tracedPS
+  let sortedQIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip qindices [0..]
+  let sortedCIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip cindices [0..]
+  let perm = Map.fromList ((zip [0..] sortedQIndices) ++ (zip [k..] (map (+k) sortedQIndices)) ++ (zip [2*k..] (map (+ (2*k)) sortedCIndices)))
   let initState = applyInv invPS (qindices ++ (map (+n) qindices) ++ cindices) $ open $ identity (outDeg currentPS)
-  --liftIO $ putStrLn $ "Initial body state: " ++ show (grind $ initState)
+  liftIO $ putStrLn $ "Initial body state: " ++ show (grind $ initState)
   modify $ \env -> env { pathsum = applyPredicate pred $ initState }
   simStmt 1 body
   endPS <- gets pathsum
-  --liftIO $ putStrLn $ "After body: " ++ show (grind $ endPS)
+  liftIO $ putStrLn $ "After body: " ++ show (grind $ endPS)
   let tracedPS' = grind $ traceMany (zip qtList (map (+n) qtList) ++ zip ctList ctList) endPS
+  liftIO $ putStrLn $ "Traced PS: " ++ show (grind $ tracedPS')
   let rearrangedPS' = embed tracedPS' 0 (perm!) (perm!)
   --liftIO $ putStrLn $ "Permuted: " ++ show (grind $ rearrangedPS')
 
   -- Check that the current state satisfies the invariant
+  ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) inv
+  let invPS = qPS <> (conjugate (renameKet qPS)) <> cPS
   let (res',count') = uglyequiv (grind rearrangedPS') (grind $ applyPredicate pred invPS)
+-}
+  simStmt 1 body
+  res' <- verifyAssert pred inv
   when (not res') $ do
     liftIO $ putStrLn $ "Error: Loop body failed to preserve invariant"
-    liftIO $ putStrLn $ "  Invariant: " ++ show (grind $ applyPredicate pred invPS)
-    liftIO $ putStrLn $ "  Initial state: " ++ show (applyPredicate pred initState)
-    liftIO $ putStrLn $ "  Output state: " ++ show rearrangedPS'
+    --liftIO $ putStrLn $ "  Invariant: " ++ show (grind $ applyPredicate pred invPS)
+    --liftIO $ putStrLn $ "  Initial state: " ++ show (applyPredicate pred initState)
+    --liftIO $ putStrLn $ "  Output state: " ++ show rearrangedPS'
 
   -- Construct the result state
-  modify $ \env -> env { pathsum = applyPredicate (1 + pred) $ initState }
+  modify $ \env -> env' { pathsum = applyPredicate (1 + pred) $ initState }
   when (res && res') $ do
     liftIO $ putStrLn $ "Success!"
   liftIO $ putStrLn $ ""
@@ -748,7 +854,6 @@ simWhileWithInv inv p cond body = do
           TInt  _ -> liftM (\i -> Left $ ket i) (exprToBoolPolyList expr)
           e -> error $ show expr
 
-        extendPS :: (([AccessPath ElaboratedType], Pathsum DMod2), ([AccessPath ElaboratedType], Pathsum DMod2)) -> (AccessPath ElaboratedType, Expr ElaboratedType) -> Simulator (([AccessPath ElaboratedType], Pathsum DMod2), ([AccessPath ElaboratedType], Pathsum DMod2))
         extendPS ((qap, qPS),(cap,cPS)) (path,expr) = do
           ps <- z' path expr
           case ps of
@@ -760,6 +865,13 @@ simWhileWithInv inv p cond body = do
           n      = outDeg ps
           ovals' = foldr (\(i,p) -> replace i p) (outVals ps) $ zip indices (outVals inv)
           replace i v xs = let (b, _:a) = splitAt i xs in b ++ v:a
+
+        initPre env = forM (concatMap Map.toList $ binds env) go where
+          go (id, binding) = case binding of
+            Symbolic ty _ -> declareSymbolic False id ty Nothing
+            Scalar ty _ b -> declareSymbolic b id ty Nothing
+            Block _ _ _ _ _ -> error "Impossible"
+            Gate _ _ _ _ _ -> error "Impossible"
           
 
 verifyDef :: ID -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [Expr ElaboratedType] -> [(ID, TypeExpr ElaboratedType)] -> Stmt ElaboratedType -> Simulator (Maybe (Pathsum DMod2))
@@ -815,7 +927,7 @@ verifyDef' id pre post refs bindings body = do
 
     (outPaths, _) = unzip post
 
-    declareAll = forM bindings (\(id, typ) -> declareSymbolic id typ Nothing)
+    declareAll = forM bindings (\(id, typ) -> declareSymbolic False id typ Nothing)
 
     applyCond (path, expr) = do
       let bra = evalBra path
@@ -882,7 +994,7 @@ evalBra path = dens . simA $ path
         (\x -> x)
 
 simKet :: Maybe Int -> Expr ElaboratedType -> Simulator (Pathsum DMod2)
-simKet n expr = case expr of
+simKet n expr = (liftIO $ putStrLn $"simKet: " ++ show n ++ " " ++ prettyPrintExpr expr) >> case expr of
   Tensor _ e1 e2          -> 
     case typeof e1 of
       TBool -> do
@@ -898,9 +1010,9 @@ simKet n expr = case expr of
     pushEmptyEnv
     forM svars $ \(id, ty) -> case ty of
       TBool   -> let v = VPoly (ofVar $ FVar id) in do
-        bindVar id $ Scalar ty v
+        bindVar id $ Scalar ty v False
       TUInt (Just n) -> let v = VPolyList [ ofVar $ FVar (varOfOffset id i) | i <- [0..n-1] ] in do
-        bindVar id $ Scalar ty v
+        bindVar id $ Scalar ty v False
     ps <- simKet n e
     popEnv
     return $ sumOver svars ps
@@ -941,7 +1053,9 @@ simKet n expr = case expr of
 exprToDyadicPoly :: Expr ElaboratedType -> Simulator (PseudoBoolean Var DyadicRational)
 exprToDyadicPoly e = case typeof e of
   TBool -> do
+    liftIO $ putStrLn $ "Expr " ++ prettyPrintExpr e ++ " to dyadic poly"
     pp <- exprToSBV e
+    liftIO $ putStrLn $ "Result " ++ show pp
     return $ lift pp
   _ -> case e of
     EBOp _ e1 DivOp e2 -> do
@@ -1120,8 +1234,8 @@ simAssign p path expr = case path of
     maybeBind <- searchBinding id
     case maybeBind of
       Nothing                    -> error "id not bound"
-      Just (Scalar typ _)        -> if p == 1 then do
-                                      declareScalar id typ (Just $ expr)
+      Just (Scalar typ _ _)      -> if p == 1 then do
+                                      declareScalar False id typ (Just $ expr)
                                     else
                                       error "bad symbolic branching" 
       Just (Symbolic typ offset) -> simSymbolicAssign p offset typ expr
@@ -1132,7 +1246,7 @@ simAssign p path expr = case path of
       VInt j ->
         case maybeBind of
           Nothing                    -> error "id not bound"
-          Just (Scalar typ e)        -> error "not sure if allowed"
+          Just (Scalar typ e _)      -> error "not sure if allowed"
           Just (Symbolic typ offset) -> simSymbolicAssign p (offset + (fromInteger j)) TBool expr
       _ -> error "index is not an int value"
 
@@ -1175,22 +1289,23 @@ declareWithPS id typ ps = do
       TQBit   -> allocateQType
       TQReg _ -> allocateQType
 
-declareSymbolic :: ID -> Type -> Maybe [SBool String] -> Simulator ()
-declareSymbolic id typ init = declareWithPS id typ ps
+declareSymbolic :: Bool -> ID -> Type -> Maybe [SBool String] -> Simulator ()
+declareSymbolic isAnnot id typ init = declareWithPS id typ ps
   where
+    id' = if isAnnot then id else "#" ++ id
     ps = case init of
       Just s -> ket s
       Nothing -> case typ of
-        TBool             -> ket [ofVar id]
+        TBool             -> ket [ofVar id']
         TQBit             -> ket [ofVar id]
-        TCReg size        -> ket [ofVar (varOfOffset id (fromInteger i)) | i <- [0..size-1]]
-        TUInt (Just size) -> ket [ofVar (varOfOffset id (fromInteger i)) | i <- [0..size-1]]
+        TCReg size        -> ket [ofVar (varOfOffset id' (fromInteger i)) | i <- [0..size-1]]
+        TUInt (Just size) -> ket [ofVar (varOfOffset id' (fromInteger i)) | i <- [0..size-1]]
         TQReg size        -> ket [ofVar (varOfOffset id (fromInteger i)) | i <- [0..size-1]]
 
-declareScalar :: ID -> Type -> Maybe (Expr ElaboratedType) -> Simulator ()
-declareScalar id typ maybeExpr = do
+declareScalar :: Bool -> ID -> Type -> Maybe (Expr ElaboratedType) -> Simulator ()
+declareScalar isAnnot id typ maybeExpr = do
   val <- getValueOrDefault
-  bindVar id (Scalar typ val)
+  bindVar id (Scalar typ val isAnnot)
   where
     getValueOrDefault = case maybeExpr of
       Just e  -> reduceExpr e            -- eval first?
@@ -1204,7 +1319,7 @@ declareScalar id typ maybeExpr = do
 declareGlobalScalar :: ID -> Type -> Expr ElaboratedType -> Simulator ()
 declareGlobalScalar vid typ expr = do
   let EType _ _ v = getAnnotation expr
-  bindGlobal vid (Scalar typ (VInt (fromJust v)))
+  bindGlobal vid (Scalar typ (VInt (fromJust v)) False)
 
 declareBlock :: ID -> [(ID, Type)] -> Maybe Type -> Stmt ElaboratedType -> Simulator ()
 declareBlock id params returns body = let (_, sig) = unzip params in
@@ -1222,47 +1337,47 @@ simDeclare decl = case decl of
       declareGlobalScalar vid typ e
     else case typ of
     TBool   -> case maybeExpr of
-      Nothing -> declareSymbolic vid TBool Nothing
+      Nothing -> declareSymbolic False vid TBool Nothing
       Just e  -> do 
         v <- reduceExpr e
         case v of
-          VBool False -> declareSymbolic vid TBool (Just [0])
-          VBool True  -> declareSymbolic vid TBool (Just [1])
-          v           -> bindVar vid (Scalar TBool v)
+          VBool False -> declareSymbolic False vid TBool (Just [0])
+          VBool True  -> declareSymbolic False vid TBool (Just [1])
+          v           -> bindVar vid (Scalar TBool v False)
     TCReg n -> do
       n' <- reduceExpr n
       case n' of
         VInt size -> case maybeExpr of
-          Nothing       -> declareSymbolic vid (TCReg size) Nothing
+          Nothing       -> declareSymbolic False vid (TCReg size) Nothing
           Just e        -> do 
             v <- reduceExpr e
             case v of
-              VInt j -> declareSymbolic vid (TCReg size) (Just $ bitVec j size)
+              VInt j -> declareSymbolic False vid (TCReg size) (Just $ bitVec j size)
         _   -> error $ "invalid register size"
     TQBit   -> case maybeExpr of
-      Nothing -> declareSymbolic vid TQBit Nothing
+      Nothing -> declareSymbolic False vid TQBit Nothing
       Just _  -> error $ "invalid value in qubit declaration"
     TQReg n -> do
       n' <- reduceExpr n
       case n' of
         VInt size -> case maybeExpr of
-          Nothing -> declareSymbolic vid (TQReg size) Nothing
+          Nothing -> declareSymbolic False vid (TQReg size) Nothing
           Just _  -> error $ "invalid qreg value"
         _         -> error $ "invalid register size"
     TUInt (Just n) -> do
       n' <- reduceExpr n
       case n' of
         VInt size -> case maybeExpr of
-          Nothing       -> declareSymbolic vid (TUInt $ Just size) Nothing
+          Nothing       -> declareSymbolic False vid (TUInt $ Just size) Nothing
           Just e        -> do 
             v <- reduceExpr e
             case v of
-              VInt j -> declareSymbolic vid (TUInt $ Just size) (Just $ bitVec j size)
+              VInt j -> declareSymbolic False vid (TUInt $ Just size) (Just $ bitVec j size)
               _ -> error $ show decl
         _   -> error $ "invalid register size"
     typ -> do
       newtyp <- typeExprToType typ
-      declareScalar vid newtyp maybeExpr
+      declareScalar False vid newtyp maybeExpr
   DDef did dparams dreturns dbody -> do
     dreturns' <- mapM typeExprToType dreturns
     dparams' <- traverse (\(a, x) -> (,) a <$> typeExprToType x) dparams
