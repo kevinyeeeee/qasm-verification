@@ -23,6 +23,7 @@ import Data.Semigroup
 import Control.Monad (mzero, msum)
 import Data.Maybe (maybeToList,mapMaybe,fromJust)
 import Data.Complex (Complex(..), mkPolar)
+import qualified Data.Complex as Cmplx
 import Data.Bits (shiftL)
 import Data.Map (Map, (!))
 import qualified Data.Map as Map
@@ -32,10 +33,12 @@ import Data.Tuple (swap)
 import Data.Functor.Identity
 import qualified Data.Partition as Partition
 
+import Control.Monad.State.Lazy hiding (lift)
+
 import qualified Feynman.Util.Unicode as U
 import Feynman.Algebra.Base
 import Feynman.Algebra.Polynomial (degree)
-import Feynman.Algebra.Polynomial.Univariate (Cyclotomic, unity, constCyc)
+import Feynman.Algebra.Polynomial.Univariate (Cyclotomic, unity, constCyc, (*|))
 import qualified Feynman.Algebra.Polynomial.Univariate as Uni
 import Feynman.Algebra.Polynomial.Multilinear
 
@@ -717,7 +720,8 @@ sumover :: (Foldable f, Eq g, Abelian g) => f String -> Pathsum g -> Pathsum g
 sumover = flip (foldl' go)
   where go sop x =
           let v = PVar $ pathVars sop in
-            sop { pathVars = (pathVars sop) + 1,
+            sop { sde = (sde sop) + 1,
+                  pathVars = (pathVars sop) + 1,
                   phasePoly = subst (FVar x) (ofVar v) (phasePoly sop),
                   outVals = map (subst (FVar x) (ofVar v)) (outVals sop) }
 
@@ -1053,6 +1057,7 @@ matchHHSolve sop = do
   (v', p') <- solveForX p
   case v' of
     PVar _ -> return (v, v', p')
+    FVar _ -> return (v, v', p')
     _      -> mzero
 
 -- | Instances of the HH rule with a linear substitution
@@ -1074,13 +1079,14 @@ matchHHInternal sop = do
     _      -> mzero
 
 -- | Solvable instance of the HH rule where \(f = 1 \oplus \prod_{x\in X} x\)
-matchHHProduct :: (Eq g, Periodic g) => Pathsum g -> [(Var, [Var])]
+matchHHProduct :: (Eq g, Periodic g) => Pathsum g -> [(Var, [SBool Var])]
 matchHHProduct sop = do
   (v, p) <- matchHH sop
-  vars <- case toTermList (1 + p) of
-    [(_, m)] -> return . Set.toList . vars $ m
-    _        -> []
-  return (v, vars)
+  let polys = factorize (1 + p)
+  if length polys < 2 then
+    []
+  else
+    return (v, polys)
 
 -- | Fully reducible instance of the HH product. Equivalent to HHProduct
 --   followed by a series of HH rules when there are no input or free variables
@@ -1159,7 +1165,7 @@ pattern HHInternal :: (Eq g, Periodic g) => Var -> Var -> SBool Var -> Pathsum g
 pattern HHInternal v v' p <- (matchHHInternal -> (v, v', p):_)
 
 -- | Pattern synonym for HH instances where the polynomial is a product
-pattern HHProduct :: (Eq g, Periodic g) => Var -> [Var] -> Pathsum g
+pattern HHProduct :: (Eq g, Periodic g) => Var -> [SBool Var] -> Pathsum g
 pattern HHProduct v vs <- (matchHHProduct -> (v, vs):_)
 
 -- | Pattern synonym for Subproduct
@@ -1208,17 +1214,19 @@ applyHHSolved (PVar i) v p (Pathsum a b c d e f) = Pathsum a b c (d-1) e' f'
         varShift v = v
 
 -- | Apply an HH product rule. Does not check if the instance is valid
-applyHHProduct :: (Eq g, Abelian g) => Var -> [Var] -> Pathsum g -> Pathsum g
-applyHHProduct (PVar i) vs (Pathsum a b c d e f) = Pathsum a' b c d' e' f
+applyHHProduct :: (Eq g, Abelian g) => Var -> [SBool Var] -> Pathsum g -> Pathsum g
+applyHHProduct (PVar i) vs (Pathsum a b c d e f) = Pathsum a' b c d' e' f'
   where m  = length vs
         a' = a + 2*(m-1)
         d' = d + (m-1)
         e' = foldr (+) (renameMonotonic varShift . remVar (PVar i) $ e) constraints
+        f' = map (renameMonotonic varShift) f
         varShift (PVar j)
           | j > i     = PVar $ j - 1
           | otherwise = PVar $ j
         varShift v = v
-        constraints = [ofVar (PVar i) * (1 + ofVar v) | (i,v) <- zip [d-1..] vs]
+        vs' = map (renameMonotonic varShift) vs
+        constraints = [lift (ofVar (PVar i) * (1 + v)) | (i,v) <- zip [d-1..] vs']
 
 -- | Apply a fully reducible HH product. Does not check if the instance is valid
 applyHHProduct' :: (Eq g, Abelian g) => Var -> [Var] -> Pathsum g -> Pathsum g
@@ -1328,6 +1336,7 @@ grind sop = case sop of
   Omega y p      -> grind $ applyOmega y p sop
   HHLinear y z p -> grind $ applyHHSolved y z p sop
   HHSolved y z p -> grind $ applyHHSolved y z p sop
+  HHProduct y ys -> grind $ applyHHProduct y ys sop
   Subproduct y   -> grind $ applySubproduct y sop
   _              -> sop
 
@@ -1400,28 +1409,31 @@ uglyequiv a b = if a' == b' then (True,0) else (res,num) where
 
   fv = union (freeVars a) (freeVars b)
 
-  (res,num) = go a' b'
+  (res,num) = evalState (go a' b') Nothing
 
-  go a b | a == b               = (True, 0)
-         | outDeg a /= outDeg b = (False, 0)
+  go a b | a == b               = return (True, 0)
+         | outDeg a /= outDeg b = return (False, 0)
          | outDeg a == 0        =
            let (l, n1) = simulate' a
                (r, n2) = simulate' b
-           in
-             (l == r, n1+n2)
-         | otherwise            = (r1 && r2, n1+n2+2) where
-             (r1, n1) = go a0 b0
-             (r2, n2) = go a1 b1
+           in do
+             res <- equalUpTo l r
+             return (res, n1+n2)
+         | otherwise            = do
+             (r1, n1) <- go a0 b0
+             (r2, n2) <- go a1 b1
+             return $ (r1 && r2, n1+n2+2) 
+             where i  = chooseIndex (a <> b) `mod` outDeg a
 
-             i  = chooseIndex (a <> b) `mod` outDeg a
+                   --p0 = identity i <> bra [0] <> identity (outDeg a - 1 - i)
+                   --p1 = identity i <> bra [1] <> identity (outDeg a - 1 - i)
+                   p0 = identity (outDeg a - 1 - i) <> bra [0] <> identity i
+                   p1 = identity (outDeg a - 1 - i) <> bra [1] <> identity i
 
-             p0 = identity i <> bra [0] <> identity (outDeg a - 1 - i)
-             p1 = identity i <> bra [1] <> identity (outDeg a - 1 - i)
-
-             a0 = grind $ a .> p0
-             a1 = grind $ a .> p1
-             b0 = grind $ b .> p0
-             b1 = grind $ b .> p1
+                   a0 = grind $ a .> p0
+                   a1 = grind $ a .> p1
+                   b0 = grind $ b .> p0
+                   b1 = grind $ b .> p1
 
   -- TODO: use set cover solver to find an output to expand which will reduce the
   -- most high degree terms
@@ -1807,3 +1819,9 @@ rus = fresh <> fresh <> identity 1 .>
       identity 2 <> sgate .>
       ccxgate .>
       hgate <> hgate <> zgate
+--      tgate <> tgate <> identity 1 .>
+--      controlled (tdggate .> zgate) <> identity 1
+
+rus' :: Pathsum DMod2
+rus' = open (identity 2) .> (rus <> (conjugate rus))
+

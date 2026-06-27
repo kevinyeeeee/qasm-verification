@@ -3,6 +3,8 @@ module Feynman.Frontend.OpenQASM3.Simulation where
 import Control.Monad.State.Strict hiding (lift)
 import Data.Map (Map, (!))
 import qualified Data.Map as Map
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Maybe (fromJust, fromMaybe)
 import Data.List ((\\), sortBy)
 import qualified Data.List as List
@@ -673,21 +675,23 @@ simAnnotated p annots stmt = case stmt of
 verifyAssert :: SBool Var -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> Simulator (Bool)
 verifyAssert p conds = do
   tmpPS <- gets pathsum
+  liftIO $ putStrLn $ ""
   liftIO $ putStrLn $ "Initial state: " ++ show tmpPS
   env <- get
   liftIO $ putStrLn $ "Initial environment: " ++ show env
   ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) conds
   let invPS = applyPredicate p $ qPS <> (conjugate (renameKet qPS)) <> cPS
-  --liftIO $ putStrLn $ "While invariant: " ++ show qPS ++ " <> " ++ show cPS
-  --liftIO $ putStrLn $ "As density operator: " ++ show invPS
+  liftIO $ putStrLn $ ""
   liftIO $ putStrLn $ "Assertion pure: " ++ show (qPS <> cPS)
   liftIO $ putStrLn $ "Assertion without predicate: " ++ show (qPS <> (conjugate (renameKet qPS)) <> cPS)
   liftIO $ putStrLn $ "Computed assertion value: " ++ show invPS
+  liftIO $ putStrLn $ "Ground: " ++ show (grind invPS)
+  liftIO $ putStrLn $ ""
   currentPS <- gets pathsum
   liftIO $ putStrLn $ "Current pathsum: " ++ show currentPS
-  qindices <- liftM concat $ mapM offsetListOfPath qAP
-  cindices <- liftM concat $ mapM offsetListOfPath cAP
   n <- getQWidth
+  qindices <- liftM concat $ mapM offsetListOfPath qAP
+  cindices <- liftM (map (+ (2*n)) . concat) $ mapM offsetListOfPath cAP
   let m = outDeg currentPS
   let k = length qindices
   let qtList = [0..n-1] \\ qindices
@@ -738,7 +742,7 @@ verifyAssert p conds = do
 --   
 simWhileWithInv :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> SBool Var -> Expr ElaboratedType -> Stmt ElaboratedType -> Simulator ()
 simWhileWithInv inv p cond body = do
-  liftIO $ putStrLn $ "Verifying loop.."
+  liftIO $ putStrLn $ "Verifying loop precondition..."
   {-
   ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) inv
   let invPS = qPS <> (conjugate (renameKet qPS)) <> cPS
@@ -777,28 +781,27 @@ simWhileWithInv inv p cond body = do
   initPre env'
   pred <- exprToSBV cond
   currentPS <- gets pathsum
+  liftIO $ putStrLn $ "Verifying loop body..."
+  liftIO $ putStrLn $ ""
   liftIO $ putStrLn $ "Symbolic starting state: " ++ show currentPS
   ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) inv
   let invPS = qPS <> (conjugate (renameKet qPS)) <> cPS
-  qindices <- liftM concat $ mapM offsetListOfPath qAP
-  cindices <- liftM concat $ mapM offsetListOfPath cAP
   n <- getQWidth
+  qindices <- liftM concat $ mapM offsetListOfPath qAP
+  cindices <- liftM (map (+ (2*n)) . concat) $ mapM offsetListOfPath cAP
   let initState = applyInv invPS (qindices ++ (map (+n) qindices) ++ cindices) $ currentPS
-  modify $ \env -> env { pathsum = applyPredicate pred $ initState }
+  let sumSome ps = sumover (filter (\s -> head s == '#') $ freeVars ps) ps
+  let initState' = sumSome initState
+  modify $ \env -> env { pathsum = grind $ sumSome $ grind $ applyPredicate pred $ initState }
   currentPS' <- gets pathsum
   n <- getQWidth
   env <- get
-  liftIO $ putStrLn $ "Initial (invariant) state: " ++ show currentPS'
-  liftIO $ putStrLn $ "env: " ++ show env
+  liftIO $ putStrLn $ "Invariant state: " ++ show initState
+  liftIO $ putStrLn $ "Closed invariant state: " ++ show initState'
+  liftIO $ putStrLn $ "I /\\ P before grind: " ++ show (sumSome $ grind $ applyPredicate pred $ initState)
+  liftIO $ putStrLn $ "I /\\ P: " ++ show currentPS'
+  liftIO $ putStrLn $ ""
   --liftIO $ putStrLn $ "while condition: " ++ prettyPrintExpr cond
-  {-
-  pred <- exprToSBV cond
-  --liftIO $ putStrLn $ "predicate: " ++ show pred
-  ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) inv
-  let invPS = qPS <> (conjugate (renameKet qPS)) <> cPS
-  qindices <- liftM concat $ mapM offsetListOfPath qAP
-  cindices <- liftM concat $ mapM offsetListOfPath cAP
-  n <- getQWidth
   let m = outDeg currentPS
   let k = length qindices
   let qtList = [0..n-1] \\ qindices
@@ -808,29 +811,24 @@ simWhileWithInv inv p cond body = do
   let sortedQIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip qindices [0..]
   let sortedCIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip cindices [0..]
   let perm = Map.fromList ((zip [0..] sortedQIndices) ++ (zip [k..] (map (+k) sortedQIndices)) ++ (zip [2*k..] (map (+ (2*k)) sortedCIndices)))
-  let initState = applyInv invPS (qindices ++ (map (+n) qindices) ++ cindices) $ open $ identity (outDeg currentPS)
-  liftIO $ putStrLn $ "Initial body state: " ++ show (grind $ initState)
-  modify $ \env -> env { pathsum = applyPredicate pred $ initState }
   simStmt 1 body
   endPS <- gets pathsum
   liftIO $ putStrLn $ "After body: " ++ show (grind $ endPS)
+  liftIO $ putStrLn $ "After body exact: " ++ show (grind $ dropScalars $ endPS)
   let tracedPS' = grind $ traceMany (zip qtList (map (+n) qtList) ++ zip ctList ctList) endPS
-  liftIO $ putStrLn $ "Traced PS: " ++ show (grind $ tracedPS')
-  let rearrangedPS' = embed tracedPS' 0 (perm!) (perm!)
-  --liftIO $ putStrLn $ "Permuted: " ++ show (grind $ rearrangedPS')
+  --liftIO $ putStrLn $ "Traced PS: " ++ show (grind $ dropScalars $ grind $ sumAll tracedPS')
+  let tracedInv' = grind $ traceMany (zip qtList (map (+n) qtList) ++ zip ctList ctList) initState'
+  --liftIO $ putStrLn $ "Traced invariant: " ++ show (grind $ tracedInv')
 
-  -- Check that the current state satisfies the invariant
-  ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) inv
-  let invPS = qPS <> (conjugate (renameKet qPS)) <> cPS
-  let (res',count') = uglyequiv (grind rearrangedPS') (grind $ applyPredicate pred invPS)
--}
-  simStmt 1 body
-  res' <- verifyAssert pred inv
+  --let (res',count') = uglyequiv (dropScalars $ grind $ sumAll tracedPS') (dropScalars $ grind tracedInv')
+  let (res',count') = uglyequiv (dropScalars $ grind endPS) (dropScalars $ grind initState')
+  --res' <- verifyAssert pred inv
   when (not res') $ do
     liftIO $ putStrLn $ "Error: Loop body failed to preserve invariant"
-    --liftIO $ putStrLn $ "  Invariant: " ++ show (grind $ applyPredicate pred invPS)
-    --liftIO $ putStrLn $ "  Initial state: " ++ show (applyPredicate pred initState)
-    --liftIO $ putStrLn $ "  Output state: " ++ show rearrangedPS'
+    liftIO $ putStrLn $ "  Invariant: " ++ show (grind $ initState')
+    liftIO $ putStrLn $ "  Invariant, reduced: " ++ show (simulate (vectorize $ close $ dropScalars $ grind initState') [])
+    liftIO $ putStrLn $ "  Output state: " ++ show (grind $ endPS)
+    liftIO $ putStrLn $ "  Output, reduced: " ++ show (simulate (vectorize $ close $ dropScalars $ grind endPS) [])
 
   -- Construct the result state
   modify $ \env -> env' { pathsum = applyPredicate (1 + pred) $ initState }
@@ -998,7 +996,7 @@ evalBra path = dens . simA $ path
         (\x -> x)
 
 simKet :: Maybe Int -> Expr ElaboratedType -> Simulator (Pathsum DMod2)
-simKet n expr = (liftIO $ putStrLn $"simKet: " ++ show n ++ " " ++ prettyPrintExpr expr) >> case expr of
+simKet n expr = case expr of
   Tensor _ e1 e2          -> 
     case typeof e1 of
       TBool -> do
@@ -1057,9 +1055,7 @@ simKet n expr = (liftIO $ putStrLn $"simKet: " ++ show n ++ " " ++ prettyPrintEx
 exprToDyadicPoly :: Expr ElaboratedType -> Simulator (PseudoBoolean Var DyadicRational)
 exprToDyadicPoly e = case typeof e of
   TBool -> do
-    liftIO $ putStrLn $ "Expr " ++ prettyPrintExpr e ++ " to dyadic poly"
     pp <- exprToSBV e
-    liftIO $ putStrLn $ "Result " ++ show pp
     return $ lift pp
   _ -> case e of
     EBOp _ e1 DivOp e2 -> do
@@ -1403,7 +1399,7 @@ bitVec' = map (fromInteger . toInteger) . List.unfoldr f
       else
         Just (n .&. 1, n `shiftR` 1)
 
-stdlib = ["x", "y", "z", "h", "cx", "cy", "cz", "ch", "id", "s", "sdg", "t", "tdg", "rz", "rx", "ry", "ccx", "crz", "u3", "u2", "u1", "cu1", "cu3", "swap"]
+stdlib = ["x", "y", "z", "h", "cx", "cy", "cz", "ct", "ch", "id", "s", "sdg", "t", "tdg", "rz", "rx", "ry", "ccx", "crz", "u3", "u2", "u1", "cu1", "cu3", "swap"]
 
 applyPS :: Pathsum DMod2 -> SBool Var -> [Int] -> Simulator ()
 applyPS gatePS p offsets = modify $ f
@@ -1478,6 +1474,7 @@ getGatePS id params = do
     ("cx", [])  -> return $ cxgate
     ("cy", [])  -> return $ controlled ygate
     ("cz", [])  -> return $ czgate
+    ("ct", [])  -> return $ controlled tgate
     ("ch", [])  -> return $ controlled hgate 
     ("id", [])  -> return $ identity 1
     ("s", [])   -> return $ sgate

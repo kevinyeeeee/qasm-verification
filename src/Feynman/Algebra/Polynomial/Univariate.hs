@@ -8,8 +8,8 @@ Portability : portable
 -}
 
 module Feynman.Algebra.Polynomial.Univariate(
-  Univariate,
-  Cyclotomic,
+  Univariate(getCoeffs),
+  Cyclotomic(getOrder,getPoly),
   var,
   constant,
   (*|),

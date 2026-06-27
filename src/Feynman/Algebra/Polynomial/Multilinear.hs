@@ -91,6 +91,8 @@ import Data.Semigroup
 import Data.Bits
 import Data.String (IsString(..))
 
+import Control.Monad
+
 import Feynman.Util.Unicode as Unicode
 import Feynman.Algebra.Base
 import Feynman.Algebra.Polynomial
@@ -396,18 +398,20 @@ factorizeTrivial p = Set.foldr tryDiv ([], p) $ vars p
 --   A. Shpilka & I. Volkovich, /On the Relation between Polynomial Identity
 --   Testing and Finding Variable Disjoint Factors/
 factorize :: (Ord v, Ord (Monomial v 'Mult), Eq r, Abelian r) => Multilinear v r 'Mult -> [Multilinear v r 'Mult]
-factorize p =
-  let (factors, p') = factorizeTrivial p in
-    factors ++ [p'] -- go p'
-  where dx x poly = subst x 0 poly + subst x 1 poly
-        go poly = do
-          x <- Set.toList $ vars poly
-          let g      = (subst x 0 poly) * (dx x poly)
-          let (o, s) = Set.partition (\y -> (dx y g) == 0) $ Set.delete x (vars poly)
-          if Set.null o
-            then return poly
-            else go (substMany (\y -> if Set.member y o then 1 else ofVar y) poly) ++
-                 go (substMany (\y -> if Set.member y (Set.insert x s) then 1 else ofVar y) poly)
+factorize p = factors ++ go p' where
+  (factors, p') = factorizeTrivial p
+
+  go poly = fromMaybe [poly] (msum $ map (factor poly) (Set.toList $ vars poly))
+
+  dx x poly = subst x 0 poly + subst x 1 poly
+
+  factor poly x =
+    let g     = (subst x 0 poly) * (dx x poly)
+        (o,s) = Set.partition (\y -> (dx y g) == 0) $ Set.delete x (vars poly)
+        po    = substMany (\y -> if Set.member y o then ofVar y else 1) poly
+        ps    = substMany (\y -> if Set.member y s then ofVar y else 1) poly
+    in
+      if g == 0 || Set.null o then Nothing else Just $ ps:(go po)
 
 {- Transformations -}
 

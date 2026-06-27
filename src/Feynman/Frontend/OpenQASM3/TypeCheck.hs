@@ -21,6 +21,8 @@ import Feynman.Core (ID)
 import qualified Feynman.Frontend.OpenQASM3.Syntax as S
 import Feynman.Frontend.OpenQASM3.Core
 
+import qualified Debug.Trace as Trace
+
 {- Types -}
 
 {- Basically duplicated type, but with a "top" type -}
@@ -221,6 +223,7 @@ stdTypes = [
   ("cx", TGate 0 2),
   ("cy", TGate 0 2),
   ("cz", TGate 0 2),
+  ("ct", TGate 0 2),
   ("cp", TGate 1 2),
   ("crx", TGate 1 2),
   ("cry", TGate 1 2),
@@ -488,7 +491,7 @@ tcStmt stmt = case stmt of
 
   SExpr loc expr -> liftM (SExpr unitTy) $ tcExpr expr
 
-  SGateCall loc mods id cargs qargs -> getBinding id >>= \(EType (TGate nC nQ) _ _) -> do
+  SGateCall loc mods id cargs qargs -> Trace.trace ("Gate call: " ++ show id) $ getBinding id >>= \(EType (TGate nC nQ) _ _) -> do
       mods <- mapM tcModifier mods
       cargs <- mapM (flip tcExprAs (TFloat Nothing)) cargs
       qargs <- broadcast =<< mapM tcAccessPath qargs
