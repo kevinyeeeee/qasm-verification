@@ -26,6 +26,7 @@ import Data.Complex (Complex(..), mkPolar)
 import Data.Bits (shiftL)
 import Data.Map (Map, (!))
 import qualified Data.Map as Map
+import Data.Map.Merge.Strict
 import Data.String (IsString(..))
 import Data.Tuple (swap)
 import Data.Functor.Identity
@@ -1357,6 +1358,37 @@ normalizeClifford sop = go $ sop .> hLayer .> hLayer where
 
 -- | Decision procedure for equivalence via fallback to variable expansion
 uglyequiv :: Pathsum DMod2 -> Pathsum DMod2 -> (Bool,Int)
+uglyequiv a b = if a' == b' then (True,0) else (res,0) where
+  a' = dropScalars . reduce . vectorize . bind fv $ a
+  b' = dropScalars . reduce . vectorize . bind fv $ b
+
+  reduce x = let x' = canonicalizeKet . grind $ x in
+    if x == x' then x else reduce x'
+
+  fv = union (freeVars a) (freeVars b)
+
+  res = equalUpTo (simulate a' []) (simulate b' [])
+
+  -- Equal up to a normalization factor shared by all terms
+  equalUpTo l r =
+    go Nothing $ Map.elems $ merge (mapMissing (\_ a -> (a,0))) (mapMissing (\_ b -> (0,b))) (zipWithMatched (\_ a b -> (a,b))) l r
+
+  go _ []         = True
+  go _ ((0,0):xs) = True
+  go _ ((0,_):xs) = False
+  go _ ((_,0):xs) = False
+  go n ((x,y):xs) = case (n, foo x y) of
+      (Nothing, 1)              -> go n xs
+      (Nothing, n)              -> go (Just n) xs
+      (Just n, n')              -> if (n == n') then go (Just n) xs else False
+
+  foo x y =
+    let x' = Uni.evaluate (x*(Uni.conj x))
+        y' = Uni.evaluate (y*(Uni.conj y))
+    in
+      if y' == 0 then 0 else x' / y'
+{-
+uglyequiv :: Pathsum DMod2 -> Pathsum DMod2 -> (Bool,Int)
 uglyequiv a b = if a' == b' then (True,0) else (res,num) where
   a' = dropScalars . reduce . vectorize . bind fv $ a
   b' = dropScalars . reduce . vectorize . bind fv $ b
@@ -1392,7 +1424,7 @@ uglyequiv a b = if a' == b' then (True,0) else (res,num) where
   -- TODO: use set cover solver to find an output to expand which will reduce the
   -- most high degree terms
   chooseIndex _ = 0
-             
+-}             
 
 -- | Checks identity by checking inputs iteratively
 isIdentity :: (Eq g, Periodic g, Dyadic g) => Pathsum g -> Bool
@@ -1529,7 +1561,7 @@ simulate sop xs = go $ sop * ket (map constant xs)
             in
               Map.singleton (map getConstant xs) (magnitude * phase)
           (Pathsum k 0 n i p xs) ->
-            let (p0, p1) = expand ps (PVar $ i-1) in
+            let (p0, p1) = expand ps (PVar $ 0) in
               Map.unionWith (+) (go p0) (go p1)
           _                      -> error "Incompatible dimensions"
 

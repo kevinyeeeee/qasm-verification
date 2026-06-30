@@ -16,7 +16,8 @@ module Feynman.Algebra.Polynomial.Univariate(
   primitiveRoot,
   unity,
   constCyc,
-  evaluate
+  evaluate,
+  conj
   )
 where
 
@@ -153,3 +154,7 @@ evaluate :: (Real r, RealFloat f) => Cyclotomic r -> Complex f
 evaluate (Cyc m p) = Map.foldrWithKey f (0.0 :+ 0.0) $ getCoeffs p
   where f root coeff = (mkPolar (realToFrac coeff) (expnt root) +)
         expnt root   = 2.0*pi*(fromInteger root)/(fromInteger m)
+
+-- | Conjugate a cyclotomic
+conj :: (Eq r, Num r) => Cyclotomic r -> Cyclotomic r
+conj (Cyc m p) = Cyc m . Univariate $ Map.mapKeys (m-) (getCoeffs p)

@@ -777,7 +777,6 @@ verifyDef' id pre post refs bindings body = do
   modify $ \env -> (initEnv True) { globals = globals env }
   eqRefs <- applyPre 
   preSum <- gets pathsum 
-  liftIO $ putStrLn $ "Pre sum " ++ show preSum
   mapM applyEqRef eqRefs
   refinedPreSum <- gets pathsum
   mapM applyRefinement refs
@@ -802,8 +801,11 @@ verifyDef' id pre post refs bindings body = do
       end <- liftIO $ getCPUTime
       liftIO $ putStrLn $ "  Failed (" ++ (format start middle end count) ++")"
       liftIO $ putStrLn $ "    initial:  " ++ show (grind preSum)
+      liftIO $ putStrLn $ "    refined:  " ++ show (grind refinedPreSum)
       liftIO $ putStrLn $ "    expected: " ++ show (grind postPS)
       liftIO $ putStrLn $ "    got:      " ++ show (grind prePS)
+      liftIO $ putStrLn $ "    Expected vector: " ++ show (simulate (grind $ vectorize $ close $ grind postPS) [])
+      liftIO $ putStrLn $ "    Received vector:      " ++ show (simulate (grind $ vectorize $ close $ grind prePS) [])
       return Nothing
       
   where
@@ -1071,7 +1073,7 @@ simFor p (id, typExpr) expr stmt = do
   v <- reduceExpr expr
   ty <- typeExprToType typExpr
   case v of
-    VList list ->
+    VList list -> do
       foldM iter Nothing list
       where
         iter (Just r) _ = return $ Just r
@@ -1334,7 +1336,7 @@ simExpr p (ECall _ fid args) = do
       let qoffsets' = concat [i | Just i <- qoffsets]
           coffsets' = concat [i | Just i <- coffsets]
           offsets   = qoffsets' ++ (map (+qwidth) qoffsets') ++ coffsets'
-      modify $ \env -> env { pathsum = grind $ applyOn summ offsets (pathsum env) }
+      modify $ \env -> env { pathsum = grind $ applyPControlled summ p offsets (pathsum env) }
       return Nothing
     Just (Block _ params _ body _) -> do
       pushEmptyEnv
