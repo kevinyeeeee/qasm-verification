@@ -39,6 +39,8 @@ import Feynman.Algebra.Polynomial.Univariate (Cyclotomic, unity, constCyc)
 import qualified Feynman.Algebra.Polynomial.Univariate as Uni
 import Feynman.Algebra.Polynomial.Multilinear
 
+import qualified Debug.Trace as Trace
+
 {-----------------------------------
  Variables
  -----------------------------------}
@@ -1374,7 +1376,7 @@ uglyequiv a b = if a' == b' then (True,0) else (res,0) where
     go Nothing $ Map.elems $ merge (mapMissing (\_ a -> (a,0))) (mapMissing (\_ b -> (0,b))) (zipWithMatched (\_ a b -> (a,b))) l r
 
   go _ []         = True
-  go _ ((0,0):xs) = True
+  go n ((0,0):xs) = go n xs
   go _ ((0,_):xs) = False
   go _ ((_,0):xs) = False
   go n ((x,y):xs) = case (n, foo x y) of
@@ -1512,7 +1514,9 @@ dropScalars sop =
   let inCone    = Set.fromList [IVar i | i <- [0..inDeg sop - 1]]
       outCone   = Set.unions $ inCone:(map vars $ outVals sop)
       corr      = Partition.fromSets $ outCone:map vars (support $ phasePoly sop)
-      fullCone  = Partition.find corr (head $ Set.toList outCone)
+      fullCone  = case Set.toList outCone of
+        []    -> Set.empty
+        (x:_) -> Partition.find corr x
       pp        = ofTermList . filter f . toTermList $ phasePoly sop where
         f (_,m) = not $ Set.disjoint fullCone (vars m)
       shiftV ps = case ps of

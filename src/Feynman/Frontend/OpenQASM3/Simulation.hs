@@ -791,7 +791,7 @@ verifyDef' id pre post refs bindings body = do
 
   -- Checking
   middle <- liftIO $ getCPUTime
-  let (res,count) = uglyequiv (grind prePS) (grind postPS)
+  let (res,count) = uglyequiv (dropScalars $ grind prePS) (dropScalars $ grind postPS)
   case res of
     True -> do
       end <- liftIO $ getCPUTime
@@ -804,8 +804,10 @@ verifyDef' id pre post refs bindings body = do
       liftIO $ putStrLn $ "    refined:  " ++ show (grind refinedPreSum)
       liftIO $ putStrLn $ "    expected: " ++ show (grind postPS)
       liftIO $ putStrLn $ "    got:      " ++ show (grind prePS)
-      liftIO $ putStrLn $ "    Expected vector: " ++ show (simulate (grind $ vectorize $ close $ grind postPS) [])
-      liftIO $ putStrLn $ "    Received vector:      " ++ show (simulate (grind $ vectorize $ close $ grind prePS) [])
+      liftIO $ putStrLn $ "    expected, scalars dropped: " ++ show (dropScalars $ grind postPS)
+      liftIO $ putStrLn $ "    got, scalars dropped:      " ++ show (dropScalars $ grind prePS)
+      liftIO $ putStrLn $ "    Expected vector: " ++ show (simulate (grind $ vectorize $ close $ dropScalars $ grind postPS) [])
+      liftIO $ putStrLn $ "    Received vector:      " ++ show (simulate (grind $ vectorize $ close $ dropScalars $ grind prePS) [])
       return Nothing
       
   where
