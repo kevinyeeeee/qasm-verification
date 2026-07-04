@@ -675,20 +675,10 @@ simAnnotated p annots stmt = case stmt of
 verifyAssert :: SBool Var -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> Simulator (Bool)
 verifyAssert p conds = do
   tmpPS <- gets pathsum
-  liftIO $ putStrLn $ ""
-  liftIO $ putStrLn $ "Initial state: " ++ show tmpPS
   env <- get
-  liftIO $ putStrLn $ "Initial environment: " ++ show env
   ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) conds
   let invPS = applyPredicate p $ qPS <> (conjugate (renameKet qPS)) <> cPS
-  liftIO $ putStrLn $ ""
-  liftIO $ putStrLn $ "Assertion pure: " ++ show (qPS <> cPS)
-  liftIO $ putStrLn $ "Assertion without predicate: " ++ show (qPS <> (conjugate (renameKet qPS)) <> cPS)
-  liftIO $ putStrLn $ "Computed assertion value: " ++ show invPS
-  liftIO $ putStrLn $ "Ground: " ++ show (grind invPS)
-  liftIO $ putStrLn $ ""
   currentPS <- gets pathsum
-  liftIO $ putStrLn $ "Current pathsum: " ++ show currentPS
   n <- getQWidth
   qindices <- liftM concat $ mapM offsetListOfPath qAP
   cindices <- liftM (map (+ (2*n)) . concat) $ mapM offsetListOfPath cAP
@@ -697,12 +687,10 @@ verifyAssert p conds = do
   let qtList = [0..n-1] \\ qindices
   let ctList = [2*n..m-1] \\ cindices
   let tracedPS = grind $ traceMany (zip qtList (map (+n) qtList) ++ zip ctList ctList) currentPS
-  liftIO $ putStrLn $ "Traced pathsum: " ++ show tracedPS
   let sortedQIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip qindices [0..]
   let sortedCIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip cindices [0..]
   let perm = Map.fromList ((zip [0..] sortedQIndices) ++ (zip [k..] (map (+k) sortedQIndices)) ++ (zip [2*k..] (map (+ (2*k)) sortedCIndices)))
   let rearrangedPS = embed tracedPS 0 (perm!) (perm!)
-  liftIO $ putStrLn $ "Permuted pathsum: " ++ show rearrangedPS
 
   -- Check that the current state satisfies the invariant
   let (res,count) = uglyequiv (dropScalars $ grind rearrangedPS) (dropScalars $ grind invPS)
@@ -743,37 +731,9 @@ verifyAssert p conds = do
 simWhileWithInv :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> SBool Var -> Expr ElaboratedType -> Stmt ElaboratedType -> Simulator ()
 simWhileWithInv inv p cond body = do
   liftIO $ putStrLn $ "Verifying loop precondition..."
-  {-
-  ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) inv
-  let invPS = qPS <> (conjugate (renameKet qPS)) <> cPS
-  --liftIO $ putStrLn $ "While invariant: " ++ show qPS ++ " <> " ++ show cPS
-  --liftIO $ putStrLn $ "As density operator: " ++ show invPS
-  currentPS <- gets pathsum
-  liftIO $ putStrLn $ "Current pathsum: " ++ show currentPS
-  qindices <- liftM concat $ mapM offsetListOfPath qAP
-  cindices <- liftM concat $ mapM offsetListOfPath cAP
-  n <- getQWidth
-  let m = outDeg currentPS
-  let k = length qindices
-  let qtList = [0..n-1] \\ qindices
-  let ctList = [2*n..m-1] \\ cindices
-  let tracedPS = grind $ traceMany (zip qtList (map (+n) qtList) ++ zip ctList ctList) currentPS
-  --liftIO $ putStrLn $ "Traced pathsum: " ++ show tracedPS
-  let sortedQIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip qindices [0..]
-  let sortedCIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip cindices [0..]
-  let perm = Map.fromList ((zip [0..] sortedQIndices) ++ (zip [k..] (map (+k) sortedQIndices)) ++ (zip [2*k..] (map (+ (2*k)) sortedCIndices)))
-  let rearrangedPS = embed tracedPS 0 (perm!) (perm!)
-  --liftIO $ putStrLn $ "Permuted pathsum: " ++ show rearrangedPS
-
-  -- Check that the current state satisfies the invariant
-  let (res,count) = uglyequiv (grind rearrangedPS) (grind invPS)
-  -}
   res <- verifyAssert 1 inv
   when (not res) $ do
     liftIO $ putStrLn $ "Error: Initial state failed loop invariant check"
-    --liftIO $ putStrLn $ "  Invariant: " ++ show invPS
-    --liftIO $ putStrLn $ "  Invariant, reduced: " ++ show (simulate (vectorize $ close invPS) [])
-    --liftIO $ putStrLn $ "  Current state: " ++ show rearrangedPS
     
   -- Now construct the most general invariant state & apply the body to it
   env' <- get
@@ -781,9 +741,6 @@ simWhileWithInv inv p cond body = do
   initPre env'
   pred <- exprToSBV cond
   currentPS <- gets pathsum
-  liftIO $ putStrLn $ "Verifying loop body..."
-  liftIO $ putStrLn $ ""
-  liftIO $ putStrLn $ "Symbolic starting state: " ++ show currentPS
   ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) inv
   let invPS = qPS <> (conjugate (renameKet qPS)) <> cPS
   n <- getQWidth
@@ -796,44 +753,30 @@ simWhileWithInv inv p cond body = do
   currentPS' <- gets pathsum
   n <- getQWidth
   env <- get
-  liftIO $ putStrLn $ "Invariant state: " ++ show initState
-  liftIO $ putStrLn $ "Closed invariant state: " ++ show initState'
-  liftIO $ putStrLn $ "I /\\ P before grind: " ++ show (sumSome $ grind $ applyPredicate pred $ initState)
-  liftIO $ putStrLn $ "I /\\ P: " ++ show currentPS'
-  liftIO $ putStrLn $ ""
-  --liftIO $ putStrLn $ "while condition: " ++ prettyPrintExpr cond
   let m = outDeg currentPS
   let k = length qindices
   let qtList = [0..n-1] \\ qindices
   let ctList = [2*n..m-1] \\ cindices
   let tracedPS = grind $ traceMany (zip qtList (map (+n) qtList) ++ zip ctList ctList) currentPS
-  --liftIO $ putStrLn $ "Traced pathsum: " ++ show tracedPS
   let sortedQIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip qindices [0..]
   let sortedCIndices = snd . unzip $ sortBy (\a b -> compare (fst a) (fst b)) $ zip cindices [0..]
   let perm = Map.fromList ((zip [0..] sortedQIndices) ++ (zip [k..] (map (+k) sortedQIndices)) ++ (zip [2*k..] (map (+ (2*k)) sortedCIndices)))
   simStmt 1 body
   endPS <- gets pathsum
-  liftIO $ putStrLn $ "After body: " ++ show (grind $ endPS)
-  liftIO $ putStrLn $ "After body exact: " ++ show (grind $ dropScalars $ endPS)
   let tracedPS' = grind $ traceMany (zip qtList (map (+n) qtList) ++ zip ctList ctList) endPS
-  --liftIO $ putStrLn $ "Traced PS: " ++ show (grind $ dropScalars $ grind $ sumAll tracedPS')
   let tracedInv' = grind $ traceMany (zip qtList (map (+n) qtList) ++ zip ctList ctList) initState'
-  --liftIO $ putStrLn $ "Traced invariant: " ++ show (grind $ tracedInv')
 
-  --let (res',count') = uglyequiv (dropScalars $ grind $ sumAll tracedPS') (dropScalars $ grind tracedInv')
+  liftIO $ putStrLn $ "Verifying loop invariant..."
   let (res',count') = uglyequiv (dropScalars $ grind endPS) (dropScalars $ grind initState')
-  --res' <- verifyAssert pred inv
   when (not res') $ do
     liftIO $ putStrLn $ "Error: Loop body failed to preserve invariant"
     liftIO $ putStrLn $ "  Invariant: " ++ show (grind $ initState')
-    liftIO $ putStrLn $ "  Invariant, reduced: " ++ show (simulate (vectorize $ close $ dropScalars $ grind initState') [])
     liftIO $ putStrLn $ "  Output state: " ++ show (grind $ endPS)
-    liftIO $ putStrLn $ "  Output, reduced: " ++ show (simulate (vectorize $ close $ dropScalars $ grind endPS) [])
 
   -- Construct the result state
   modify $ \env -> env' { pathsum = applyPredicate (1 + pred) $ initState }
   when (res && res') $ do
-    liftIO $ putStrLn $ "Success!"
+    liftIO $ putStrLn $ "Loop verified!"
   liftIO $ putStrLn $ ""
   return ()
 
