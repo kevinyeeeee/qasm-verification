@@ -791,7 +791,7 @@ verifyDef' id pre post refs bindings body = do
 
   -- Checking
   middle <- liftIO $ getCPUTime
-  let (res,count) = uglyequiv (dropScalars $ grind prePS) (dropScalars $ grind postPS)
+  let (res,count) = uglyequiv (grind prePS) (grind postPS)
   case res of
     True -> do
       end <- liftIO $ getCPUTime

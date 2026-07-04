@@ -199,7 +199,7 @@ def cMult(qubit ctl, uint[n] A, qubit[n] B, qubit[n] C, qubit[n] D, qubit X) {
   x ctl;
 }
 
-@pre   A ~> a:uint[n]{ a % 2 == 1 }, B ~> |b:uint[n]>, C ~> |0>,      ANC1 ~> |0>, ANC2 ~> |0>,  X ~> |0>
+@pre   A ~> a:uint[n]{ a % 2 == 1 }, B ~> |b:uint[n]>, C ~> |0>,   ANC1 ~> |0>, ANC2 ~> |0>,  X ~> |0>
 @post                                B ~> |b>,         C ~> |a^b>, ANC1 ~> |0>, ANC2 ~> |0>,  X ~> |0>
 def modExp(uint[n] A, qubit[n] B, qubit[n] C, qubit[n] ANC1, qubit[n] ANC2, qubit X) {
   x C[0];

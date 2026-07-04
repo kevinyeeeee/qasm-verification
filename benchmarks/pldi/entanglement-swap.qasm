@@ -22,14 +22,14 @@ include "stdgates.inc";
 
 
 @pre  (a,b) ~> |0,0>
-@post (a,b) ~> sum{x:bit}.|x,x>
+@post (a,b) ~> sum{q:bit}.|q,q>
 def bellPrep(qubit a, qubit b) {
   h a;
   cx a,b;
 }
 
-@pre  t ~> |x:bit>,  (a,b) ~> sum{x:bit}.|x,x>
-@post b ~> |x>, discard (t,a)
+@pre  t ~> |q:bit>,  (a,b) ~> sum{q:bit}.|q,q>
+@post b ~> |q>, discard (t,a)
 def teleport(qubit t, qubit a, qubit b) {
   bit[2] res;
 
@@ -44,8 +44,8 @@ def teleport(qubit t, qubit a, qubit b) {
   if (res[1] == 1) { x b; }
 }
 
-@pre  (a,b[0]) ~> sum{x:bit}.|x,x>, (b[1],c) ~> sum{x:bit}.|x,x>
-@post (a,c) ~> sum{x:bit}.|x,x>, discard (b[0],b[1])
+@pre  (a,b[0]) ~> sum{q:bit}.|q,q>, (b[1],c) ~> sum{q:bit}.|q,q>
+@post (a,c) ~> sum{q:bit}.|q,q>, discard (b[0],b[1])
 def distributeBell(qubit a, qubit[2] b, qubit c) {
 
   // Teleport b[0] to c

@@ -19,8 +19,8 @@ gate cj_tof_star a, b, c, anc {
     h c;
 }
 
-@pre    a   ~> |q:bit>,  b  ~> |r:bit>,   c ~> |s:bit> , anc1 ~> |0>, anc2~> |0>
-@post   a   ~> |q>,  b  ~> |r> ,  c ~> |s + q*r>, anc1 ~> |0> , anc2 ~> |0> 
+@pre    a   ~> |q:bit>,  b  ~> |r:bit>,   c ~> |w:bit> , anc1 ~> |0>, anc2~> |0>
+@post   a   ~> |q>,  b  ~> |r> ,  c ~> |w + q*r>, anc1 ~> |0> , anc2 ~> |0> 
 def cj_tof (qubit a, qubit b, qubit c, qubit anc1, qubit anc2) {
     cj_tof_star a, b, anc1, anc2;
     s anc1;
