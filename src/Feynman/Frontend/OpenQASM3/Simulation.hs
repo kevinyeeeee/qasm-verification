@@ -657,19 +657,24 @@ simAnnotated p annots stmt = case stmt of
   SDeclare _ decl@(DGate _ cparams _ _  ) ->
     error "cannot verify gate with angles parameters"
   SWhile _ cond body -> do
-    simWhileWithInv (getInv annots) p cond body
+--    simWhileWithInv (getAssert annots) p cond body
+    simWhileAuto cond body
     return Nothing
-  _               -> simStmt p stmt
+  _               -> do
+    res <- verifyAssert p (getAssert annots)
+    when res $ do
+      liftIO $ putStrLn $ "Assertion passed!"
+    simStmt p stmt
   where
     (pre, post, refs) = case List.find (\a -> case a of
       Triple _ _ _ -> True
       _            -> False ) annots of
         Just (Triple pre post refs) -> (pre, post, refs)
         _                           -> ([] , []  , []  )
-    getInv []     = error "Loop annotation is not an invariant"
-    getInv (x:xs) = case x of
+    getAssert []  = error "Annotation is not an assertion"
+    getAssert (x:xs) = case x of
       Assert a -> a
-      _        -> getInv xs
+      _        -> getAssert xs
       
 
 verifyAssert :: SBool Var -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> Simulator (Bool)
@@ -814,6 +819,46 @@ simWhileWithInv inv p cond body = do
             Block _ _ _ _ _ -> error "Impossible"
             Gate _ _ _ _ _ -> error "Impossible"
           
+simWhileAuto :: Expr ElaboratedType -> Stmt ElaboratedType -> Simulator ()
+simWhileAuto cond body = do
+  env <- get
+  n <- getQWidth
+  
+  -- Compute the initial value of the pathsum & predicate
+  prePS <- gets pathsum
+  initialPred <- exprToSBV cond
+
+  -- Simulate the body
+  simStmt 1 body
+  prepostPS <- gets pathsum
+
+  -- Compute the loop exit predicate
+  finalPred <- exprToSBV cond
+
+  -- Apply the loop continuation predicate
+  let postPS = applyPredicate finalPred prepostPS
+
+  -- Trace out all classical values
+  let prePS'  = grind $ prePS { outDeg = 2*n, outVals = take (2*n) (outVals prePS) }
+  let postPS' = grind $ postPS { outDeg = 2*n, outVals = take (2*n) (outVals postPS) }
+
+  -- Check that the final state is equal to the original
+  let (res',count') = uglyequiv (prePS') (postPS')
+  when (not res') $ do
+    liftIO $ putStrLn $ "Error: Loop body not identity"
+  when (res') $ do
+    liftIO $ putStrLn $ "Loop successfully verified!"
+    liftIO $ putStrLn $ "Final state: " ++ show (grind $ applyPredicate (1 + finalPred) prepostPS)
+
+  -- Update the state
+  modify $ \_ -> env { pathsum = grind $ applyPredicate (1 + finalPred) prepostPS }
+
+  where initPre env = forM (concatMap Map.toList $ binds env) go where
+          go (id, binding) = case binding of
+            Symbolic ty _ -> declareSymbolic False id ty Nothing
+            Scalar ty _ b -> declareSymbolic b id ty Nothing
+            Block _ _ _ _ _ -> error "Impossible"
+            Gate _ _ _ _ _ -> error "Impossible"
 
 verifyDef :: ID -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [Expr ElaboratedType] -> [(ID, TypeExpr ElaboratedType)] -> Stmt ElaboratedType -> Simulator (Maybe (Pathsum DMod2))
 verifyDef id pre post refs binds body = do
@@ -832,8 +877,10 @@ verifyDef' id pre post refs bindings body = do
   preSum <- gets pathsum 
   mapM applyEqRef eqRefs
   refinedPreSum <- gets pathsum
-  mapM applyRefinement refs
+  liftIO $ putStrLn $ "    initial:  " ++ show (grind preSum)
+  liftIO $ putStrLn $ "    refined:  " ++ show (grind refinedPreSum)
   do { simStmt 1 body }
+  mapM applyRefinement refs
   prePS <- traceExcept outPaths
   modify $ \env -> env { pathsum = mempty, qwidth = 0, binds = Map.empty : binds env }
   applyPost
@@ -849,6 +896,9 @@ verifyDef' id pre post refs bindings body = do
     True -> do
       end <- liftIO $ getCPUTime
       liftIO $ putStrLn $ "  Success (" ++ (format start middle end count) ++")"
+      liftIO $ putStrLn $ "    refined:  " ++ show (grind refinedPreSum)
+      liftIO $ putStrLn $ "    post:  " ++ show (grind postPS)
+      liftIO $ putStrLn $ "    Summary: " ++ show (grind $ sumAll (postSum <> dagger refinedPreSum))
       return $ Just $ grind (sumAll (postSum <> dagger refinedPreSum))
     False -> do
       end <- liftIO $ getCPUTime
@@ -859,8 +909,6 @@ verifyDef' id pre post refs bindings body = do
       liftIO $ putStrLn $ "    got:      " ++ show (grind prePS)
       liftIO $ putStrLn $ "    expected, scalars dropped: " ++ show (dropScalars $ grind postPS)
       liftIO $ putStrLn $ "    got, scalars dropped:      " ++ show (dropScalars $ grind prePS)
-      liftIO $ putStrLn $ "    Expected vector: " ++ show (simulate (grind $ vectorize $ close $ dropScalars $ grind postPS) [])
-      liftIO $ putStrLn $ "    Received vector:      " ++ show (simulate (grind $ vectorize $ close $ dropScalars $ grind prePS) [])
       return Nothing
       
   where
