@@ -67,7 +67,6 @@ def comparator(qubit[n] q, qubit[n] r, qubit cmp, qubit anc) {
   } 
 }
 
-// Failing, kills processor
 @pre  m ~> |M:uint[n]{M > 1}>, q ~> |a:uint[n]{a < 2*M}>, cnd ~> |0>,       anc ~> |0>
 @post m ~> |M>,                q ~> |a % M>,              cnd ~> |(a >= M)>, anc ~> |0>
 def modRed(qubit[n] q, qubit[n] m, qubit cnd, qubit anc) {
