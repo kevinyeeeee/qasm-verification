@@ -782,6 +782,7 @@ verifyDef' id pre post refs bindings body = do
   mapM applyRefinement refs
   do { simStmt 1 body }
   prePS <- traceExcept outPaths
+  size <- gets qwidth
   modify $ \env -> env { pathsum = mempty, qwidth = 0, binds = Map.empty : binds env }
   applyPost
   postSum <- gets pathsum; 
@@ -795,11 +796,11 @@ verifyDef' id pre post refs bindings body = do
   case res of
     True -> do
       end <- liftIO $ getCPUTime
-      liftIO $ putStrLn $ "  Success (" ++ (format start middle end count) ++")"
+      liftIO $ putStrLn $ "  Success (" ++ (format start middle end count size) ++")"
       return $ Just $ grind (sumAll (postSum <> dagger refinedPreSum))
     False -> do
       end <- liftIO $ getCPUTime
-      liftIO $ putStrLn $ "  Failed (" ++ (format start middle end count) ++")"
+      liftIO $ putStrLn $ "  Failed (" ++ (format start middle end count size) ++")"
       liftIO $ putStrLn $ "    initial:  " ++ show (grind preSum)
       liftIO $ putStrLn $ "    refined:  " ++ show (grind refinedPreSum)
       liftIO $ putStrLn $ "    expected: " ++ show (grind postPS)
@@ -811,11 +812,11 @@ verifyDef' id pre post refs bindings body = do
       return Nothing
       
   where
-    format s m e c =
+    format s m e c size =
       let t1 = formatFloatN ((fromIntegral $ m - s) / 10^12) 6
           t2 = formatFloatN ((fromIntegral $ e - m) / 10^12) 6
       in
-        t1 ++ "/" ++ t2 ++ "/" ++ show c where
+        t1 ++ "/" ++ t2 ++ "/" ++ show c ++ "/" ++ show size where
 
     (outPaths, _) = unzip post
 

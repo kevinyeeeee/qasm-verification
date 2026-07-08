@@ -5,6 +5,7 @@ from easyprocess import EasyProcess
 
 import os
 import csv
+import json
 from os.path import splitext, join
 import subprocess
 import sys
@@ -14,6 +15,7 @@ import matplotlib as mpl
 mpl.use('pgf')
 import numpy as np
 import matplotlib.pyplot as plt
+import re
 
 plt.rc('font', size=10)
 plt.rc('legend', fontsize=10)
@@ -102,19 +104,70 @@ def find_subs(root):
         groupings.append((direct,positives,posndfs,negatives,negndfs))
     return groupings
 
-def gather_datum(prog_call, path, base, additional_flags, timeout):
+def gather_datum(prog_call, path, base):
     start = time.time()
-    flags = additional_flags
+    flags = []#additional_flags
     #flags = map(lambda t: t(path,base),additional_flags)
     print(prog_call + BASE_FLAGS + flags + [join(path, base + TEST_EXT)])
-    process_output = EasyProcess(prog_call + BASE_FLAGS + flags + [join(path, base + TEST_EXT)]).call(timeout=timeout+5)
+    process_output = EasyProcess(prog_call + BASE_FLAGS + flags + [join(path, base + TEST_EXT)]).call(timeout=TIMEOUT_TIME+5)
     end = time.time()
     return ((end - start), process_output.stdout,process_output.stderr)
 
-def gather_data(path, base, name):
-    current_data = {"Test":name}
+def parse_output(datum):
+    # Regular expression pattern to capture the name and the 4 metrics
+    pattern = r"Verifying\s+(.*?)\.\.\.\s*\n\s*Success\s*\((.*?)\/(.*?)\/(.*?)\/(.*?)\)"
 
-    def gather_col(flags, run_combiner, col_names, timeout_time, repetition_count, compare):
+    # Find all occurrences in the text
+    matches = re.findall(pattern, datum)
+
+    # Build the structured dictionary list
+    parsed_list = []
+    for match in matches:
+        parsed_list.append({
+            "name": match[0],
+            "sim_time": float(match[1]),
+            "check_time": float(match[2]),
+            "expansions": int(match[3]),
+            "qwidth": int(match[4])
+        })
+
+    return parsed_list
+
+def gather_data(path, base, name):
+    current_data = {"Test":name, "Runs":[]}
+    for i in range(REPETITION_COUNT):
+        run = {}
+        (time,datum,err) = gather_datum(["cabal","run","tcqasm"], path, base)
+        error = False
+
+        if err != "":
+            print("errored out")
+            print(err)
+            error = True
+            run["Result"] = "Error"
+            run["Output"] = err
+        if time >= TIMEOUT_TIME:
+            print("timed out")
+            error = True 
+            run["Result"] = "Timeout"
+            run["Output"] = datum
+        if datum == "":
+            print("memoried out")
+            error = True
+            run["Result"] = "Memout"
+            run["Output"] = datum
+
+        if error:
+            current_data["Runs"] = current_data["Runs"] + [run]
+            break
+
+        print("no errors")
+        run["Result"] = "Success"
+        run["Output"] = datum
+        run["Circuits"] = parse_output(datum)
+        current_data["Runs"] = current_data["Runs"] + [run]
+
+    """def gather_col(flags, run_combiner, col_names, timeout_time, repetition_count, compare):
         run_data = []
         timeout = False
         error = False
@@ -171,15 +224,15 @@ def gather_data(path, base, name):
             run_data_transpose = transpose(run_data)
             combined_data = run_combiner(run_data_transpose)
             for (col_name,data) in zip(col_names,combined_data):
-                current_data[col_name] = data
+                current_data[col_name] = data"""
 
-    def ctime_combiner(run_data_transpose):
+    """def ctime_combiner(run_data_transpose):
         data_indices = range(1,len(run_data_transpose))
         cols = [[float(x) for x in run_data_transpose[i]] for i in data_indices]
         averages = [average(col) for col in cols]
-        return averages
+        return averages"""
 
-    gather_col([],ctime_combiner,["SimulationTime","CheckingTime","ExpansionCount","ComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
+    #gather_col([],ctime_combiner,["SimulationTime","CheckingTime","ExpansionCount","ComputationTime"],TIMEOUT_TIME,REPETITION_COUNT,False)
 
     return current_data
 
@@ -200,6 +253,12 @@ def clean_full_data(data):
         for key in row.keys():
             row[key] = clean(row[key])
 
+def print_json_data(data,name):
+    #clean_full_data(data)
+    ensure_dir("generated-data/")
+    with open("generated-data/" + name, "w") as jsonfile:
+        json.dump(data, jsonfile, indent=4)
+
 def print_data(data,name):
     clean_full_data(data)
     ensure_dir("generated-data/")
@@ -211,6 +270,13 @@ def print_data(data,name):
 def print_usage(args):
     print("Usage: {0} <benchmark_dir>".format(args[0]))
 
+def load_json_data(name):
+    try:
+        with open("generated-data/" + name, "r") as jsonfile:
+            return json.load(jsonfile)
+    except:
+        return []
+
 def load_data(name):
     try:
         with open("generated-data/" + name, "r") as csvfile:
@@ -219,8 +285,8 @@ def load_data(name):
     except:
         return []
     
-def makecsv(benchmark_path,data_file):
-        data = load_data(data_file)
+def makejson(benchmark_path,data_file):
+        data = load_json_data(data_file)
         print("existing data")
         print(data)
         if os.path.exists(benchmark_path) and os.path.isdir(benchmark_path):
@@ -232,11 +298,11 @@ def makecsv(benchmark_path,data_file):
                 if (not (any(str(row["Test"]) == str(test_name) for row in data))):
                     current_data = gather_data(path, base, test_name)
                     data.append(current_data)
-                    print_data(data,data_file)
+                    print_json_data(data,data_file)
                 else:
                     print("data already retrieved")
             sort_data(data)
-            print_data(data,data_file)
+            print_json_data(data,data_file)
         else:
             print(args)
             print_usage(args)
@@ -341,18 +407,24 @@ def makeqftgraph():
     fig.savefig("generated-data/qft.eps", bbox_inches='tight')
 
 def main(args):
-    if len(args) == 5:
+    log_data = """Verifying and...
+  Success (0.000047/0.000866/0/123)
+Verifying cg_tof_2...
+  Success (0.000019/0.000435/1/321)"""
+    print(parse_output(log_data))
+
+    if len(args) == 2:
         benchmark_path = args[1]
-        qft_path = args[2]
-        cuccaro_path = args[3]
-        mult_path = args[4]
-        makecsv(benchmark_path,"data.csv")
-        makecsv(qft_path,"qft.csv")
-        makecsv(cuccaro_path,"cuccaro.csv")
-        makecsv(mult_path,"mult.csv")
-        makeqftgraph()
-        makecuccarograph()
-        makemultgraph()
+        #qft_path = args[2]
+        #cuccaro_path = args[3]
+        #mult_path = args[4]
+        makejson(benchmark_path,"data.json")
+        #makecsv(qft_path,"qft.csv")
+        #makecsv(cuccaro_path,"cuccaro.csv")
+        #makecsv(mult_path,"mult.csv")
+        #makeqftgraph()
+        #makecuccarograph()
+        #makemultgraph()
     else:
         print_usage(args)
 
