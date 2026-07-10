@@ -411,7 +411,7 @@ def shor(uint[n] M, uint[n] A, qubit[n] B, qubit[n] C, qubit[n] dummy, qubit[n] 
   iqft(B);
 }
 
-@pre  M ~> m:uint[n]{ m > 1 }, A ~> a:uint[n] { (gcd(a, m) == 1) && (a < m) && ((order(M,a) % M) == 0) && (a > 1)}, B ~> |0>, C ~> |0>, dummy ~> |0>, ANC1 ~> |0>, ANC2 ~> |0>, X ~> |0>, carry ~> |0>, ANC3 ~> |0>, result ~> 0
+@pre  M ~> m:uint[n]{ m > 1 }, A ~> a:uint[n] { (gcd(a, m) == 1) && (a < m) && ((order(m,a) % 2^n) == 0) && (a > 1)}, B ~> |0>, C ~> |0>, dummy ~> |0>, ANC1 ~> |0>, ANC2 ~> |0>, X ~> |0>, carry ~> |0>, ANC3 ~> |0>, result ~> 0
 @post result ~> 0
 def checkShor(uint[n] M, uint[n] A, qubit[n] B, qubit[n] C, qubit[n] dummy, qubit[n] ANC1, qubit[n] ANC2, qubit[3] X, qubit carry, qubit[n] ANC3, uint[n] result) {
   shor(M,A,B,C,dummy,ANC1,ANC2,X,carry,ANC3);
@@ -421,5 +421,5 @@ def checkShor(uint[n] M, uint[n] A, qubit[n] B, qubit[n] C, qubit[n] dummy, qubi
   uint[n] tmp = 0;
   tmp = measure B;
 
-  result = tmp;  // % order(M, A);
+  result = tmp % (2**n / order(M, A));
 }
