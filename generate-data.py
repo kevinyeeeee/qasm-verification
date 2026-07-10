@@ -73,9 +73,9 @@ def average(lst):
 
 TEST_EXT = '.qasm'
 BASE_FLAGS = []
-TIMEOUT_TIME = 300
+TIMEOUT_TIME = 600
 
-REPETITION_COUNT = 1
+REPETITION_COUNT = 10
 
 def ensure_dir(f):
     d = os.path.dirname(f)
@@ -104,18 +104,21 @@ def find_subs(root):
         groupings.append((direct,positives,posndfs,negatives,negndfs))
     return groupings
 
-def gather_datum(prog_call, path, base):
+def gather_datum(prog_call, path, base, additional_flags):
     start = time.time()
-    flags = []#additional_flags
-    #flags = map(lambda t: t(path,base),additional_flags)
+    flags = BASE_FLAGS + additional_flags
     print(prog_call + BASE_FLAGS + flags + [join(path, base + TEST_EXT)])
-    process_output = EasyProcess(prog_call + BASE_FLAGS + flags + [join(path, base + TEST_EXT)]).call(timeout=TIMEOUT_TIME+5)
+    proc = EasyProcess(prog_call + BASE_FLAGS + flags + [join(path, base + TEST_EXT)])
+    try:
+        process_output = proc.call(timeout=TIMEOUT_TIME+5)
+    finally:
+        proc.stop()
     end = time.time()
-    return ((end - start), process_output.stdout,process_output.stderr)
+    return ((end - start), proc.stdout,proc.stderr)
 
 def parse_output(datum):
     # Regular expression pattern to capture the name and the 4 metrics
-    pattern = r"Verifying\s+(.*?)\.\.\.\s*\n\s*Success\s*\((.*?)\/(.*?)\/(.*?)\/(.*?)\)"
+    pattern = r"Verifying\s+(.*?)\.\.\.\s*\n\s*Completed\s*\((.*?)\/(.*?)\/(.*?)\/(.*?)\/(.*?)\)"
 
     # Find all occurrences in the text
     matches = re.findall(pattern, datum)
@@ -128,44 +131,58 @@ def parse_output(datum):
             "sim_time": float(match[1]),
             "check_time": float(match[2]),
             "expansions": int(match[3]),
-            "qwidth": int(match[4])
+            "qwidth": int(match[4]),
+            "success": True if match[5] == "true" else False
         })
 
     return parsed_list
 
-def gather_data(path, base, name):
-    current_data = {"Test":name, "Runs":[]}
+def feynman_run(path,base,flags):
+    data = {"Runs":[]}
     for i in range(REPETITION_COUNT):
         run = {}
-        (time,datum,err) = gather_datum(["cabal","run","tcqasm"], path, base)
+        (time,datum,err) = gather_datum(["cabal","run","tcqasm"], path, base, flags)
         error = False
 
-        if err != "":
-            print("errored out")
-            print(err)
-            error = True
-            run["Result"] = "Error"
-            run["Output"] = err
         if time >= TIMEOUT_TIME:
             print("timed out")
-            error = True 
             run["Result"] = "Timeout"
             run["Output"] = datum
-        if datum == "":
-            print("memoried out")
             error = True
+        elif datum == "":
+            print("memoried out")
             run["Result"] = "Memout"
             run["Output"] = datum
+            error = True
 
         if error:
-            current_data["Runs"] = current_data["Runs"] + [run]
+            run["Circuits"] = []
+            data["Runs"] = data["Runs"] + [run]
             break
 
-        print("no errors")
         run["Result"] = "Success"
         run["Output"] = datum
         run["Circuits"] = parse_output(datum)
-        current_data["Runs"] = current_data["Runs"] + [run]
+        data["Runs"] = data["Runs"] + [run]
+    data["Circuits"] = []
+    all_circs = [circ for run in data["Runs"] for circ in run["Circuits"]]
+    for cname in set([circ["name"] for circ in all_circs]):
+        circ_data = {}
+        relevant_circs = [circ for circ in all_circs if circ["name"] == cname]
+        circ_data["name"] = cname
+        circ_data["sim_time"] = average([circ["sim_time"] for circ in relevant_circs])
+        circ_data["check_time"] = average([circ["check_time"] for circ in relevant_circs])
+        circ_data["total_time"] = circ_data["sim_time"] + circ_data["check_time"]
+        circ_data["expansions"] = relevant_circs[0]["expansions"]
+        circ_data["qwidth"] = relevant_circs[0]["qwidth"]
+        circ_data["success"] = relevant_circs[0]["success"]
+        data["Circuits"] = data["Circuits"] + [circ_data]
+    return data
+
+def gather_data(path, base, name):
+    current_data = {"Test":name}
+    current_data["feynman"] = feynman_run(path,base,[])
+    current_data["no-comp"] = feynman_run(path,base,["no-comp"])
 
     """def gather_col(flags, run_combiner, col_names, timeout_time, repetition_count, compare):
         run_data = []
@@ -407,12 +424,6 @@ def makeqftgraph():
     fig.savefig("generated-data/qft.eps", bbox_inches='tight')
 
 def main(args):
-    log_data = """Verifying and...
-  Success (0.000047/0.000866/0/123)
-Verifying cg_tof_2...
-  Success (0.000019/0.000435/1/321)"""
-    print(parse_output(log_data))
-
     if len(args) == 2:
         benchmark_path = args[1]
         #qft_path = args[2]

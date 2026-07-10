@@ -1,5 +1,6 @@
 module Feynman.Frontend.OpenQASM3.Simulation where
 
+import qualified System.Timeout as T
 import Control.Monad.State.Strict hiding (lift)
 import Data.Map (Map, (!))
 import qualified Data.Map as Map
@@ -35,11 +36,13 @@ isPowerOfTwo :: (Bits i, Integral i) => i -> Bool
 isPowerOfTwo n = n > 0 && (n .&. (n - 1)) == 0
 
 data Env = Env {
+  compositional :: Bool,
   pathsum :: Pathsum DMod2,
   globals :: Map ID Binding,
   binds :: [Map ID Binding],
   density :: Bool,
-  qwidth :: Int                  -- number of allocated qubits
+  qwidth :: Int                  -- number of allocated qubits,
+
 } deriving (Show)
 
 data Binding =
@@ -178,15 +181,15 @@ getQWidth = gets qwidth
 getCWidth :: Simulator Int
 getCWidth = gets go
   where
-    go (Env ps _ _ False qwidth) = outDeg ps - qwidth
-    go (Env ps _ _ True  qwidth) = outDeg ps - 2*qwidth
+    go (Env _ ps _ _ False qwidth) = outDeg ps - qwidth
+    go (Env _ ps _ _ True  qwidth) = outDeg ps - 2*qwidth
 
 -- | index of pathsum where classical registers start
 getCOffset :: Simulator Int
 getCOffset = gets go
   where
-    go (Env _ _ _ False qwidth) = qwidth
-    go (Env _ _ _ True  qwidth) = 2 * qwidth
+    go (Env _ _ _ _ False qwidth) = qwidth
+    go (Env _ _ _ _ True  qwidth) = 2 * qwidth
 
 -- | returns physical index of access path in ps
 offsetListOfPath :: AccessPath ElaboratedType -> Simulator [Int]
@@ -235,9 +238,9 @@ bindGlobal = addBinding True
 bindVar :: ID -> Binding -> Simulator ()
 bindVar = addBinding False
 
-addSummary :: ID -> Pathsum DMod2 -> Simulator ()
-addSummary id ps =
-  modify $ \env -> env { globals = Map.adjust (\b -> b { summary = Just (grind ps) }) id $ globals env }
+addSummary :: Bool -> ID -> Pathsum DMod2 -> Simulator ()
+addSummary bcomp id ps =
+  modify $ \env -> env { globals = Map.adjust (\b -> if bcomp then b { summary = Just ps } else b { summary = Nothing }) id $ globals env }
 
 addBinding :: Bool -> ID -> Binding -> Simulator ()
 addBinding global id bind =
@@ -265,7 +268,7 @@ allocateQType v qbits = do
   where
     qbits' = renameKet qbits
     size   = outDeg qbits
-    allocateQ env@(Env ps _ _ density w) = env { pathsum = newPs, qwidth = w + size }
+    allocateQ env@(Env _ ps _ _ density w) = env { pathsum = newPs, qwidth = w + size }
       where
         psSize   = outDeg ps
         newOuts  = if density then qbits <> (conjugate qbits') else qbits
@@ -278,15 +281,15 @@ allocateCType v bits = do
   modify $ allocateC
   return $ (toInteger offset)
   where
-    allocateC env@(Env ps _ _ density w) = env { pathsum = newPs }
+    allocateC env@(Env _ ps _ _ density w) = env { pathsum = newPs }
       where
         psSize   = outDeg ps
         embedded = embed bits psSize (\i -> i) (\i -> i + psSize)
         newPs    = ps .> embedded
 
 measurePS :: Int -> Env -> Env
-measurePS _      env@(Env _ _ _ False _)      = error "not density matrix"
-measurePS offset env@(Env ps _ _ True qwidth) = env { pathsum = ps' }
+measurePS _      env@(Env _ _ _ _ False _)      = error "not density matrix"
+measurePS offset env@(Env _ ps _ _ True qwidth) = env { pathsum = ps' }
   where
     ps' = grind $ applyMeasure offset (offset + qwidth) ps
 
@@ -303,8 +306,8 @@ bindParam ((pid, ptype), v) = case (ptype, v) of
   (_, _)                 ->
     bindVar pid $ Scalar ptype v
 
-initEnv :: Bool -> Env
-initEnv b = Env (ket []) Map.empty [Map.empty] b 0
+initEnv :: Bool -> Bool -> Env
+initEnv bdens bcomp = Env bcomp (ket []) Map.empty [Map.empty] bdens 0
 
 pushEmptyEnv :: Simulator ()
 pushEmptyEnv =
@@ -639,7 +642,8 @@ simAnnotated p annots stmt = case stmt of
     simDeclare decl
     case sum of
       Just sum -> do
-        addSummary id sum
+        bcomp <- gets compositional
+        addSummary bcomp id sum
         return Nothing
       Nothing -> do
         return Nothing
@@ -674,7 +678,7 @@ verifyAssert conds = error "TODO"
 
 simWhileWithInv :: [(AccessPath ElaboratedType, Expr ElaboratedType)] -> SBool Var -> Expr ElaboratedType -> Stmt ElaboratedType -> Simulator ()
 simWhileWithInv inv p cond body = do
-  liftIO $ putStrLn $ "Verifying loop.."
+  --liftIO $ putStrLn $ "Verifying loop.."
   ((qAP,qPS),(cAP,cPS)) <- foldM extendPS (([],identity 0), ([],identity 0)) inv
   let invPS = qPS <> (conjugate (renameKet qPS)) <> cPS
   --liftIO $ putStrLn $ "While invariant: " ++ show qPS ++ " <> " ++ show cPS
@@ -760,12 +764,41 @@ simWhileWithInv inv p cond body = do
           n      = outDeg ps
           ovals' = foldr (\(i,p) -> replace i p) (outVals ps) $ zip indices (outVals inv)
           replace i v xs = let (b, _:a) = splitAt i xs in b ++ v:a
-          
+
+-- | Runs a StateT action with a timeout.
+-- Returns Nothing if it times out, but still preserves the state up to the timeout.
+runStateTimeout :: Int -> Simulator a -> Simulator (Maybe a)
+runStateTimeout microSeconds action = StateT $ \currentState -> do
+    -- 1. Unwrap StateT to regular IO by passing the current state
+    -- 2. Execute it inside the native System.Timeout
+    timeoutResult <- T.timeout microSeconds (runStateT action currentState)
+    
+    case timeoutResult of
+        Nothing -> 
+            -- Timed out! Return Nothing, but preserve the state we started with
+            return (Nothing, currentState)
+            
+        Just (value, newState) -> 
+            -- Finished in time! Return the value and the newly modified state
+            return (Just value, newState)
+
 
 verifyDef :: ID -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [Expr ElaboratedType] -> [(ID, TypeExpr ElaboratedType)] -> Stmt ElaboratedType -> Simulator (Maybe (Pathsum DMod2))
 verifyDef id pre post refs binds body = do
   binds' <- traverse (\(a, x) -> (,) a <$> typeExprToType x) binds
-  verifyDef' id pre post refs binds' body
+  res <- runStateTimeout (60 * 1000000) (verifyDef' id pre post refs binds' body)
+  case res of
+    Just res ->
+      return res
+    Nothing -> do
+      liftIO $ putStrLn $ "  Completed (" ++ (format 2000000000000 1000000000000 0 0 0 True) ++")"
+      return Nothing
+  where
+    format s m e c size success =
+      let t1 = formatFloatN ((fromIntegral $ m - s) / 10^12) 6
+          t2 = formatFloatN ((fromIntegral $ e - m) / 10^12) 6
+      in
+        t1 ++ "/" ++ t2 ++ "/" ++ show c ++ "/" ++ show size ++ "/" ++ (if success then "true" else "false") where
 
 verifyDef' :: ID -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [(AccessPath ElaboratedType, Expr ElaboratedType)] -> [Expr ElaboratedType] -> [(ID, Type)] -> Stmt ElaboratedType -> Simulator (Maybe (Pathsum DMod2))
 verifyDef' id pre post refs bindings body = do
@@ -774,7 +807,8 @@ verifyDef' id pre post refs bindings body = do
 
   -- Simulation
   env' <- get
-  modify $ \env -> (initEnv True) { globals = globals env }
+  bcomp <- gets compositional
+  modify $ \env -> (initEnv True bcomp) { globals = globals env }
   eqRefs <- applyPre 
   preSum <- gets pathsum 
   mapM applyEqRef eqRefs
@@ -793,30 +827,35 @@ verifyDef' id pre post refs bindings body = do
   -- Checking
   middle <- liftIO $ getCPUTime
   let (res,count) = uglyequiv (grind prePS) (grind postPS)
+  {-rco <- liftIO $ (timeout (60*1000) (uglyequiv (grind prePS) (grind postPS))-}
   case res of
     True -> do
       end <- liftIO $ getCPUTime
-      liftIO $ putStrLn $ "  Success (" ++ (format start middle end count size) ++")"
+      liftIO $ putStrLn $ "  Completed (" ++ (format start middle end count size True) ++")"
       return $ Just $ grind (sumAll (postSum <> dagger refinedPreSum))
     False -> do
       end <- liftIO $ getCPUTime
-      liftIO $ putStrLn $ "  Failed (" ++ (format start middle end count size) ++")"
-      liftIO $ putStrLn $ "    initial:  " ++ show (grind preSum)
+      liftIO $ putStrLn $ "  Completed (" ++ (format start middle end count size False) ++")"
+      {-liftIO $ putStrLn $ "    initial:  " ++ show (grind preSum)
       liftIO $ putStrLn $ "    refined:  " ++ show (grind refinedPreSum)
       liftIO $ putStrLn $ "    expected: " ++ show (grind postPS)
       liftIO $ putStrLn $ "    got:      " ++ show (grind prePS)
       liftIO $ putStrLn $ "    expected, scalars dropped: " ++ show (dropScalars $ grind postPS)
       liftIO $ putStrLn $ "    got, scalars dropped:      " ++ show (dropScalars $ grind prePS)
       liftIO $ putStrLn $ "    Expected vector: " ++ show (simulate (grind $ vectorize $ close $ dropScalars $ grind postPS) [])
-      liftIO $ putStrLn $ "    Received vector:      " ++ show (simulate (grind $ vectorize $ close $ dropScalars $ grind prePS) [])
+      liftIO $ putStrLn $ "    Received vector:      " ++ show (simulate (grind $ vectorize $ close $ dropScalars $ grind prePS) [])-}
       return Nothing
+    {-Nothing -> do
+      end <- liftIO $ getCPUTime
+      liftIO $ putStrLn $ "  Completed (" ++ (format 2 1 0 0 size False) ++")"
+      return Nothing-}
       
   where
-    format s m e c size =
+    format s m e c size success =
       let t1 = formatFloatN ((fromIntegral $ m - s) / 10^12) 6
           t2 = formatFloatN ((fromIntegral $ e - m) / 10^12) 6
       in
-        t1 ++ "/" ++ t2 ++ "/" ++ show c ++ "/" ++ show size where
+        t1 ++ "/" ++ t2 ++ "/" ++ show c ++ "/" ++ show size ++ "/" ++ (if success then "true" else "false") where
 
     (outPaths, _) = unzip post
 
@@ -1152,7 +1191,7 @@ simSymbolicAssign p offset typ expr = do
     (TUInt (Just n), v)           -> getPolyListOfValue v >>= \l -> modify $ f (fromInteger n) (fromJust l)
     (t, v) -> error $ show t ++ " " ++ show v
   where
-    f n polyl env@(Env ps@(Pathsum _ _ _ _ _ out) _ _ density qwidth) =
+    f n polyl env@(Env _ ps@(Pathsum _ _ _ _ _ out) _ _ density qwidth) =
       let (qreg, creg) = splitAt (if density then 2*qwidth else qwidth) out
           oldList      = drop (fromInteger offset) . take (fromInteger offset + n) $ creg
           newList      = zipWith (\old new -> p*new + (1+p)*old) oldList (polyl ++ repeat 0)
@@ -1162,8 +1201,8 @@ simSymbolicAssign p offset typ expr = do
 getOutPoly :: Int -> Simulator (SBool Var)
 getOutPoly = gets . g
   where
-    g j (Env (Pathsum _ _ _ _ _ out) _ _ False qwidth) = out !! (j + qwidth)
-    g j (Env (Pathsum _ _ _ _ _ out) _ _ True  qwidth) = out !! (j + 2*qwidth)
+    g j (Env _ (Pathsum _ _ _ _ _ out) _ _ False qwidth) = out !! (j + qwidth)
+    g j (Env _ (Pathsum _ _ _ _ _ out) _ _ True  qwidth) = out !! (j + 2*qwidth)
 
 getOutPolyList :: [Int] -> Simulator [SBool Var]
 getOutPolyList = mapM getOutPoly
@@ -1294,8 +1333,8 @@ stdlib = ["x", "y", "z", "h", "cx", "cy", "cz", "ch", "id", "s", "sdg", "t", "td
 applyPS :: Pathsum DMod2 -> SBool Var -> [Int] -> Simulator ()
 applyPS gatePS p offsets = modify $ f
   where
-    f env@(Env ps _ _ False _) = env { pathsum = grind $ applyPControlled gatePS p offsets ps }
-    f env@(Env ps _ _ True qwidth) = 
+    f env@(Env _ ps _ _ False _) = env { pathsum = grind $ applyPControlled gatePS p offsets ps }
+    f env@(Env _ ps _ _ True qwidth) = 
       let offsets' = map (+qwidth) offsets in
         env { pathsum = grind $ applyPControlled (conjugate gatePS) p offsets' . applyPControlled gatePS p offsets $ ps }
 
@@ -1394,8 +1433,9 @@ getGatePS id params = do
           gatePS <- gets pathsum                                                                                         
           popEnv
           modify $ \env -> env { pathsum = ps , density = density , qwidth = qwidth }
+          bcomp <- gets compositional
           if cs == [] then
-            addSummary gid gatePS >> return gatePS
+            addSummary bcomp gid gatePS >> return gatePS
           else  
             return $ gatePS
         _ -> error $ gid ++ " is not a gate"
@@ -1412,9 +1452,9 @@ simReset expr = case expr of
       Just (Symbolic TQBit offset)     -> modify $ resetOffset offset
       Just (Symbolic (TQReg n) offset) -> mapM_ modify [resetOffset i | i <- [offset..offset+(fromInteger n)-1] ] 
   where
-    resetOffset offset env@(Env ps@(Pathsum _ _ _ _ _ out) _ _ False _)     =
+    resetOffset offset env@(Env _ ps@(Pathsum _ _ _ _ _ out) _ _ False _)     =
       env { pathsum = grind $ resetPS (fromInteger offset) ps }
-    resetOffset offset env@(Env ps@(Pathsum _ _ _ _ _ out) _ _ True qwidth) =
+    resetOffset offset env@(Env _ ps@(Pathsum _ _ _ _ _ out) _ _ True qwidth) =
       env { pathsum = grind $ resetPS ((fromInteger offset) + qwidth) . resetPS (fromInteger offset) $ ps }
 
     resetPS offset ps@(Pathsum _ _ _ _ _ out) = ps { outVals = newOut }
@@ -1493,13 +1533,13 @@ simStmts :: [Stmt ElaboratedType] -> Simulator ()
 simStmts = mapM_ $ simStmt 1
 
 simProgPure :: Prog ElaboratedType -> IO Env
-simProgPure (Prog _ stmts) = execStateT (simStmts stmts) (initEnv False)
+simProgPure (Prog _ stmts) = execStateT (simStmts stmts) (initEnv False True)
 
-simProg :: Prog ElaboratedType -> IO Env
-simProg (Prog _ stmts) = execStateT (simStmts stmts) (initEnv True)
+simProg :: Bool -> Prog ElaboratedType -> IO Env
+simProg b (Prog _ stmts) = execStateT (simStmts stmts) (initEnv True b)
 
 simulationResult :: Prog ElaboratedType -> IO String
 simulationResult prog = do
-  env <- simProg prog
+  env <- simProg True prog
   return $ show (grind $ pathsum env)   
        

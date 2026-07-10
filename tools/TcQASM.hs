@@ -9,8 +9,8 @@ import Feynman.Frontend.OpenQASM3.TypeCheck
 import Feynman.Frontend.OpenQASM3.Simulation
 import Feynman.Timing
 
-tcFile :: String -> IO ()
-tcFile src = case QASM3Parser.parseString src of
+tcFile :: Bool -> String -> IO ()
+tcFile b src = case QASM3Parser.parseString src of
     QASM3Chatty.Failure _ err -> error ("Parse error: " ++ err)
     QASM3Chatty.Value _ qasm -> case translateProg qasm of
       Left error -> printErrors [error]
@@ -18,11 +18,12 @@ tcFile src = case QASM3Parser.parseString src of
         Left errors -> printErrors errors
         Right prog  -> do
           {-mapM_ putStrLn $ prettyPrint prog-}
-          env <- simProg prog
+          env <- simProg b prog
           return $ env `seq` ()
 
 parseArgs :: [String] -> IO ()
-parseArgs (f:[]) | ((drop (length f - 5) f) == ".qasm") = readFile f >>= tcFile
+parseArgs (f:[]) | ((drop (length f - 5) f) == ".qasm") = readFile f >>= tcFile True
+parseArgs ("no-comp":f:[]) | ((drop (length f - 5) f) == ".qasm") = readFile f >>= tcFile False
 parseArgs _ = putStrLn "Usage: tcqasm <filename>.qasm"
 
 main :: IO ()
