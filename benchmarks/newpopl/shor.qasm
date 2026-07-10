@@ -222,11 +222,14 @@ def cMult(qubit ctl, uint[n] A, qubit[n] B, qubit[n] C, qubit[n] D, qubit X) {
 @pre   A ~> a:uint[n]{ a % 2 == 1 }, B ~> |b:uint[n]>, C ~> |0>,   ANC1 ~> |0>, ANC2 ~> |0>,  X ~> |0>
 @post  A ~> a,                       B ~> |b>,         C ~> |a^b>, ANC1 ~> |0>, ANC2 ~> |0>,  X ~> |0>
 def modExp(uint[n] A, qubit[n] B, qubit[n] C, qubit[n] ANC1, qubit[n] ANC2, qubit X) {
+  uint[n] tmp = 1;
+  tmp = A;
   x C[0];
   for int i in [0:n-1] {
     cMult(B[i], A, C, ANC1, ANC2, X);
     A = A * A;
   }
+  A = tmp;
 }
 
 def order(uint[n] a) -> uint[n] {
