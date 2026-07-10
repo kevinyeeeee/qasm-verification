@@ -55,7 +55,7 @@ def oopMult(qubit[n] A, qubit[n] B, qubit[n] C, qubit X) {
 }
 
 @pre   A ~> a:uint[n]{ a % 2 == 1 }, B ~> |b:uint[n]>, C ~> |0>,   X ~> |0>
-@post                                B ~> |b>,         C ~> |a*b>, X ~> |0>
+@post  A ~> a,                       B ~> |b>,         C ~> |a*b>, X ~> |0>
 def constOopMult(uint[n] A, qubit[n] B, qubit[n] C, qubit X) {
   for uint j in [0:n-2] {
     uint m = n - j;
@@ -98,8 +98,8 @@ def unConstOopMult(uint[n] A, qubit[n] B, qubit[n] C, qubit X) {
   }
 }
 
-@pre   A ~> a:uint[n]{ a % 2 == 1 }, B ~> |b:uint[n]>, C ~> |0>,   X ~> |0>
-@post                                B ~> |b>,         C ~> |a*b>,     X ~> |0>
+@pre   A ~> a:uint[n]{ a % 2 == 1 }, B ~> |b:uint[n]>, C ~> |c:uint[n]>,   X ~> |0>
+@post                                B ~> |b>,         C ~> |c+a*b>,     X ~> |0>
 def ccmult(uint[n] A, qubit[n] B, qubit[n] C, qubit X) {
   for uint j in [0:n-2] {
     uint m = n - j;
@@ -125,8 +125,8 @@ def ccmult(uint[n] A, qubit[n] B, qubit[n] C, qubit X) {
   if (A[n-1] == 1) {cx B[0], C[n-1]; }
 }
 
-@pre   A ~> a:uint[n]{ a % 2 == 1 }, B ~> |b:uint[n]>, C ~> |a*b>,   X ~> |0>
-@post                                B ~> |b>,         C ~> |0>,     X ~> |0>
+@pre   A ~> a:uint[n]{ a % 2 == 1 }, B ~> |b:uint[n]>, C ~> |c:uint[n]>,   X ~> |0>
+@post  A ~> a,                       B ~> |b>,         C ~> |c-a*b>,     X ~> |0>
 def constUnmult(uint[n] A, qubit[n] B, qubit[n] C, qubit X) {
   if (A[n-1] == 1) {cx B[0], C[n-1]; }
   for uint k in [0:n-2] {
@@ -182,7 +182,7 @@ def check(uint[n] A, uint[n] B) {
 }
 
 @pre   A ~> a:uint[n]{ a % 2 == 1 }, B ~> |b:uint[n]>, C ~> |0>,   X ~> |0>
-@post                                B ~> |b*a>,       C ~> |0>,   X ~> |0>
+@post  A ~> a,                       B ~> |b*a>,       C ~> |0>,   X ~> |0>
 def inPlaceMult(uint[n] A, qubit[n] B, qubit[n] C, qubit X) {
   constOopMult(A, B, C, X);
   SWAP(B, C);
@@ -190,7 +190,7 @@ def inPlaceMult(uint[n] A, qubit[n] B, qubit[n] C, qubit X) {
 }
 
 @pre   A ~> a:uint[n]{ a % 2 == 1 }, ctl ~> |c:bit>, B ~> |b:uint[n]>,      C ~> |0>,D ~> |0>,   X ~> |0>
-@post                                ctl ~> |c>,     B ~> |c*b*a + (~c)*b>, C ~> |0>,D ~> |0>,   X ~> |0>
+@post  A ~> a,                       ctl ~> |c>,     B ~> |c*b*a + (~c)*b>, C ~> |0>,D ~> |0>,   X ~> |0>
 def cMult(qubit ctl, uint[n] A, qubit[n] B, qubit[n] C, qubit[n] D, qubit X) {
   x ctl;
   cSWAP(ctl, B, C);
@@ -200,13 +200,14 @@ def cMult(qubit ctl, uint[n] A, qubit[n] B, qubit[n] C, qubit[n] D, qubit X) {
 }
 
 @pre   A ~> a:uint[n]{ a % 2 == 1 }, B ~> |b:uint[n]>, C ~> |0>,   ANC1 ~> |0>, ANC2 ~> |0>,  X ~> |0>
-@post                                B ~> |b>,         C ~> |a^b>, ANC1 ~> |0>, ANC2 ~> |0>,  X ~> |0>
+@post  A ~> 0,                       B ~> |b>,         C ~> |a^b>, ANC1 ~> |0>, ANC2 ~> |0>,  X ~> |0>
 def modExp(uint[n] A, qubit[n] B, qubit[n] C, qubit[n] ANC1, qubit[n] ANC2, qubit X) {
   x C[0];
   for int i in [0:n-1] {
-    cMult(B[i], A, C, ANC1, ANC2);
+    cMult(B[i], A, C, ANC1, ANC2, X);
     A = A * A;
   }
+  A = 0;
 }
 
 @pre a ~> |q:uint[n]>
